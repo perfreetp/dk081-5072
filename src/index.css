@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: '"Noto Sans SC"', '"PingFang SC"', '"Microsoft YaHei"', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply bg-neutral-50 text-neutral-800;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg font-medium text-sm transition-all duration-150 select-none whitespace-nowrap;
+  }
+  .btn-primary {
+    @apply btn bg-brand-orange text-white hover:bg-brand-orange-dark shadow-sm hover:shadow-md active:translate-y-px;
+  }
+  .btn-secondary {
+    @apply btn bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-50 hover:border-neutral-300;
+  }
+  .btn-ghost {
+    @apply btn text-neutral-600 hover:bg-neutral-100;
+  }
+  .btn-danger {
+    @apply btn bg-accent-rose text-white hover:bg-accent-rose/90;
+  }
+  .card {
+    @apply bg-white rounded-xl shadow-card border border-neutral-100;
+  }
+  .input {
+    @apply w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-brand-orange/20 focus:border-brand-orange transition-colors;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+  .sidebar-link {
+    @apply flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-150;
+  }
+  .sidebar-link-active {
+    @apply bg-brand-orange/10 text-brand-orange-dark;
+  }
+  .sidebar-link-inactive {
+    @apply text-neutral-600 hover:bg-neutral-100 hover:text-neutral-800;
+  }
+  .tab-btn {
+    @apply px-4 py-2 text-sm font-medium border-b-2 transition-all;
+  }
+  .tab-active {
+    @apply border-brand-orange text-brand-orange-dark;
+  }
+  .tab-inactive {
+    @apply border-transparent text-neutral-500 hover:text-neutral-700 hover:border-neutral-300;
+  }
+  .progress-bar {
+    @apply h-1.5 bg-neutral-100 rounded-full overflow-hidden;
+  }
+  .kanban-col {
+    @apply flex flex-col gap-3 p-3 bg-neutral-50 rounded-xl min-h-[500px];
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #CED4DA transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #CED4DA;
+    border-radius: 3px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: #ADB5BD;
+  }
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, rgba(0,0,0,0.03) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(0,0,0,0.03) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  .bg-noise {
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  }
+}
