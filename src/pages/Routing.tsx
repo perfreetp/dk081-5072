@@ -75,10 +75,19 @@ const getStatusBadge = (status: Route['status']) => {
 };
 
 const getTimeSlotBadge = (startTime: string) => {
-  const hour = parseInt(startTime.split(':')[0], 10);
+  const match = startTime.match(/ (\d{2}):/);
+  const hour = match ? parseInt(match[1], 10) : 9;
   if (hour < 12) return { label: '上午', className: 'bg-sky-100 text-sky-700' };
   if (hour < 17) return { label: '下午', className: 'bg-purple-100 text-purple-700' };
   return { label: '晚间', className: 'bg-indigo-100 text-indigo-700' };
+};
+
+export const getRouteTimeSlot = (startTime: string): 'MORNING' | 'AFTERNOON' | 'EVENING' => {
+  const match = startTime.match(/ (\d{2}):/);
+  const hour = match ? parseInt(match[1], 10) : 9;
+  if (hour < 12) return 'MORNING';
+  if (hour < 17) return 'AFTERNOON';
+  return 'EVENING';
 };
 
 function RouteCard({
@@ -361,10 +370,8 @@ export default function Routing() {
       return true;
     }).filter((r) => {
       if (timeSlotFilter === 'ALL') return true;
-      const hour = parseInt(r.startTime.split(':')[0], 10);
-      if (timeSlotFilter === 'MORNING') return hour < 12;
-      if (timeSlotFilter === 'AFTERNOON') return hour >= 12 && hour < 17;
-      return hour >= 17;
+      const routeSlot = getRouteTimeSlot(r.startTime);
+      return routeSlot === timeSlotFilter;
     });
   }, [routes, currentDate, areaFilter, timeSlotFilter]);
 
@@ -450,9 +457,21 @@ export default function Routing() {
       alert('当前没有可拼车的订单');
       return;
     }
+
+    if (selectedRouteId && result.removedRouteIds.includes(selectedRouteId)) {
+      if (result.firstNewRouteId) {
+        setSelectedRouteId(result.firstNewRouteId);
+      } else {
+        setSelectedRouteId(null);
+      }
+    }
+
     let msg = `智能拼车完成：共收拢 ${result.totalOrders} 单，生成 ${result.newRoutesCount} 条新线路`;
     if (result.splitCount > 0) {
       msg += `，其中 ${result.splitCount} 趟因装载量超限拆分`;
+    }
+    if (result.removedRouteIds.length > 0) {
+      msg += `（重排 ${result.removedRouteIds.length} 条原线路）`;
     }
     alert(msg);
   };

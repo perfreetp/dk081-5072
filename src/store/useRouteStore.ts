@@ -99,7 +99,13 @@ interface RouteState {
 
   validateAddOrderToRoute: (routeId: string, order: Order) => { success: boolean; error?: string };
   addOrderToRoute: (routeId: string, order: Order) => { success: boolean; error?: string };
-  autoOptimizeRoutes: (date: string) => { totalOrders: number; newRoutesCount: number; splitCount: number };
+  autoOptimizeRoutes: (date: string) => {
+    totalOrders: number;
+    newRoutesCount: number;
+    splitCount: number;
+    removedRouteIds: string[];
+    firstNewRouteId: string | null;
+  };
 }
 
 const saveRoutes = (routes: Route[]): Route[] => {
@@ -346,17 +352,24 @@ export const useRouteStore = create<RouteState>((set, get) => ({
     const { routes } = get();
     const allOrders = useOrderStore.getState().orders;
 
-    const plannedRoutesForDate = routes.filter((r) => r.date === date && r.status === 'PLANNED');
-    const orderIdsInPlannedRoutes = new Set(plannedRoutesForDate.flatMap((r) => r.orderIds));
+    const routesForDate = routes.filter((r) => r.date === date && r.status !== 'COMPLETED');
+    const routeIdsToRemove = routesForDate.map((r) => r.id);
+    const orderIdsInRoutes = new Set(routesForDate.flatMap((r) => r.orderIds));
 
     const ordersToRoute = allOrders.filter(
       (o) =>
         o.appointmentDate === date &&
-        (o.status === 'PENDING' || orderIdsInPlannedRoutes.has(o.id))
+        (o.status === 'PENDING' || orderIdsInRoutes.has(o.id))
     );
 
     if (ordersToRoute.length === 0) {
-      return { totalOrders: 0, newRoutesCount: 0, splitCount: 0 };
+      return {
+        totalOrders: 0,
+        newRoutesCount: 0,
+        splitCount: 0,
+        removedRouteIds: routeIdsToRemove,
+        firstNewRouteId: null,
+      };
     }
 
     const orderIdsToReset = new Set(ordersToRoute.map((o) => o.id));
@@ -368,7 +381,7 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       ),
     }));
 
-    const remainingRoutes = routes.filter((r) => !(r.date === date && r.status === 'PLANNED'));
+    const remainingRoutes = routes.filter((r) => !(r.date === date && r.status !== 'COMPLETED'));
 
     const groups = new Map<string, Order[]>();
     ordersToRoute.forEach((order) => {
@@ -383,7 +396,7 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       EVENING: { start: '18:00', end: '21:00' },
     };
 
-    const newRoutes: Route[] = [...remainingRoutes];
+    const builtRoutes: Route[] = [];
     let newRoutesCount = 0;
     let splitCount = 0;
     let routeIndex = remainingRoutes.length + 1;
@@ -469,7 +482,7 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       const [district, slot] = key.split('__');
       const timeSlot = slot as TimeSlot;
       const createdRoutes = batchOrdersByCapacity(orders, timeSlot, district);
-      newRoutes.push(...createdRoutes);
+      builtRoutes.push(...createdRoutes);
       newRoutesCount += createdRoutes.length;
 
       createdRoutes.forEach((route) => {
@@ -485,7 +498,15 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       });
     });
 
-    set({ routes: saveRoutes(newRoutes) });
-    return { totalOrders: ordersToRoute.length, newRoutesCount, splitCount };
+    const finalRoutes = [...remainingRoutes, ...builtRoutes];
+    set({ routes: saveRoutes(finalRoutes) });
+
+    return {
+      totalOrders: ordersToRoute.length,
+      newRoutesCount,
+      splitCount,
+      removedRouteIds: routeIdsToRemove,
+      firstNewRouteId: builtRoutes[0]?.id || null,
+    };
   },
 }));
