@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { Order, OrderStatus, OrderType, Priority, TimeSlot } from '@/types/order';
+import type { Worker } from '@/types/worker';
 import mockOrders from '@/data/mockOrders';
+import { useWorkerStore } from '@/store/useWorkerStore';
 
 interface OrderFilters {
   type?: OrderType;
@@ -33,6 +35,9 @@ interface OrderState {
   getOrderById: (id: string) => Order | undefined;
   getFilteredOrders: () => Order[];
   getStats: () => { total: number; pending: number; inProgress: number; completed: number; urgent: number };
+  assignOrderToRoute: (orderId: string, routeId: string, routeNo?: string) => void;
+  quickAssignWorkers: (orderId: string, workerIds: string[], workerNames: string[]) => void;
+  autoReassignTimeoutOrders: () => number;
 }
 
 export const useOrderStore = create<OrderState>((set, get) => ({
@@ -99,5 +104,63 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       completed: filtered.filter((o) => o.status === 'COMPLETED').length,
       urgent: filtered.filter((o) => o.priority === 'URGENT' && o.status !== 'COMPLETED').length,
     };
+  },
+
+  assignOrderToRoute: (orderId, routeId, routeNo) => set((s) => ({
+    orders: s.orders.map((o) =>
+      o.id === orderId
+        ? { ...o, assignedRouteId: routeId, assignedRouteNo: routeNo, status: 'ASSIGNED', updatedAt: new Date().toISOString() }
+        : o
+    ),
+  })),
+
+  quickAssignWorkers: (orderId, workerIds, workerNames) => set((s) => ({
+    orders: s.orders.map((o) =>
+      o.id === orderId
+        ? {
+            ...o,
+            assignedWorkerIds: workerIds,
+            assignedWorkerNames: workerNames,
+            status: 'ASSIGNED',
+            updatedAt: new Date().toISOString(),
+          }
+        : o
+    ),
+  })),
+
+  autoReassignTimeoutOrders: () => {
+    const { orders } = get();
+    const now = Date.now();
+    const THIRTY_MINUTES = 30 * 60 * 1000;
+
+    const timeoutOrders = orders.filter((o) => {
+      if (o.status !== 'PENDING') return false;
+      if (o.timeoutReassigned) return false;
+      const createdAt = new Date(o.createdAt).getTime();
+      return now - createdAt > THIRTY_MINUTES;
+    });
+
+    if (timeoutOrders.length === 0) return 0;
+
+    const availableWorkers: Worker[] = useWorkerStore.getState().getAvailableWorkers();
+    let workerIndex = 0;
+
+    const updatedOrders = orders.map((o) => {
+      if (!timeoutOrders.find((t) => t.id === o.id)) return o;
+      const worker = availableWorkers[workerIndex % Math.max(availableWorkers.length, 1)];
+      workerIndex++;
+      return {
+        ...o,
+        priority: 'HIGH' as Priority,
+        status: 'ASSIGNED' as OrderStatus,
+        assignedWorkerIds: worker ? [worker.id] : o.assignedWorkerIds,
+        assignedWorkerNames: worker ? [worker.name] : o.assignedWorkerNames,
+        timeoutReassigned: true,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+
+    set({ orders: updatedOrders });
+    return timeoutOrders.length;
   },
 }));

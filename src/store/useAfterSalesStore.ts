@@ -8,6 +8,7 @@ import type {
   Responsibility,
 } from '@/types/aftersales';
 import mockAfterSales from '@/data/mockAfterSales';
+import { storage } from '@/utils/storage';
 
 interface AfterSalesFilters {
   type?: AfterSalesType;
@@ -103,10 +104,39 @@ interface AfterSalesState {
     totalAddItemFee: number;
     criticalComplaints: number;
   };
+
+  processComplaint: (
+    id: string,
+    data: {
+      level?: ComplaintLevel;
+      category?: ComplaintCategory;
+      responsibility?: Responsibility;
+      involvedWorkerId?: string;
+      involvedWorkerName?: string;
+      compensationAmount?: number;
+      appeasementPlan?: string;
+    }
+  ) => void;
+  resolveAndClose: (id: string, closingRemark: string) => void;
+  markProcessing: (id: string) => void;
 }
 
+const saveAfterSalesOrders = (orders: AfterSalesOrder[]): AfterSalesOrder[] => {
+  storage.set('afterSalesOrders', orders);
+  return orders;
+};
+
+const createHistoryEntry = (action: string, remark?: string) => ({
+  id: `H${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+  action,
+  operatorName: '当前用户',
+  operatorRole: 'USER',
+  remark,
+  timestamp: new Date().toISOString(),
+});
+
 export const useAfterSalesStore = create<AfterSalesState>((set, get) => ({
-  orders: mockAfterSales,
+  orders: storage.get('afterSalesOrders', mockAfterSales) as AfterSalesOrder[],
   selectedIds: [],
   filters: {},
   activeTab: 'ALL',
@@ -134,7 +164,7 @@ export const useAfterSalesStore = create<AfterSalesState>((set, get) => ({
     const id = `AS${String(s.orders.length + 1).padStart(3, '0')}`;
     const asNo = `AS${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(s.orders.length + 1).padStart(3, '0')}`;
     return {
-      orders: [
+      orders: saveAfterSalesOrders([
         ...s.orders,
         {
           ...order,
@@ -151,17 +181,17 @@ export const useAfterSalesStore = create<AfterSalesState>((set, get) => ({
             },
           ],
         },
-      ],
+      ]),
     };
   }),
   updateOrder: (id, data) => set((s) => ({
-    orders: s.orders.map((o) => (o.id === id ? { ...o, ...data } : o)),
+    orders: saveAfterSalesOrders(s.orders.map((o) => (o.id === id ? { ...o, ...data } : o))),
   })),
   deleteOrder: (id) => set((s) => ({
-    orders: s.orders.filter((o) => o.id !== id),
+    orders: saveAfterSalesOrders(s.orders.filter((o) => o.id !== id)),
   })),
   updateStatus: (id, status) => set((s) => ({
-    orders: s.orders.map((o) =>
+    orders: saveAfterSalesOrders(s.orders.map((o) =>
       o.id === id
         ? {
             ...o,
@@ -179,10 +209,10 @@ export const useAfterSalesStore = create<AfterSalesState>((set, get) => ({
             ],
           }
         : o
-    ),
+    )),
   })),
   assignHandler: (id, handlerId, handlerName) => set((s) => ({
-    orders: s.orders.map((o) =>
+    orders: saveAfterSalesOrders(s.orders.map((o) =>
       o.id === id
         ? {
             ...o,
@@ -201,10 +231,10 @@ export const useAfterSalesStore = create<AfterSalesState>((set, get) => ({
             ],
           }
         : o
-    ),
+    )),
   })),
   addHistory: (id, action, operatorName, operatorRole, remark) => set((s) => ({
-    orders: s.orders.map((o) =>
+    orders: saveAfterSalesOrders(s.orders.map((o) =>
       o.id === id
         ? {
             ...o,
@@ -221,21 +251,68 @@ export const useAfterSalesStore = create<AfterSalesState>((set, get) => ({
             ],
           }
         : o
-    ),
+    )),
   })),
   setComplaintInfo: (id, info) => set((s) => ({
-    orders: s.orders.map((o) => (o.id === id ? { ...o, ...info } : o)),
+    orders: saveAfterSalesOrders(s.orders.map((o) =>
+      o.id === id
+        ? {
+            ...o,
+            ...info,
+            status: 'PROCESSING',
+            history: [
+              ...o.history,
+              createHistoryEntry('提交投诉处理方案'),
+            ],
+          }
+        : o
+    )),
   })),
   setRescheduleInfo: (id, info) => set((s) => ({
-    orders: s.orders.map((o) => (o.id === id ? { ...o, ...info } : o)),
+    orders: saveAfterSalesOrders(s.orders.map((o) =>
+      o.id === id
+        ? {
+            ...o,
+            ...info,
+            status: 'PROCESSING',
+            history: [
+              ...o.history,
+              createHistoryEntry('提交改期处理方案'),
+            ],
+          }
+        : o
+    )),
   })),
   setAddItemInfo: (id, items, totalFee) => set((s) => ({
-    orders: s.orders.map((o) =>
-      o.id === id ? { ...o, addedItems: items, addItemTotalFee: totalFee } : o
-    ),
+    orders: saveAfterSalesOrders(s.orders.map((o) =>
+      o.id === id
+        ? {
+            ...o,
+            addedItems: items,
+            addItemTotalFee: totalFee,
+            status: 'PROCESSING',
+            history: [
+              ...o.history,
+              createHistoryEntry('提交加项处理方案'),
+            ],
+          }
+        : o
+    )),
   })),
   setReturnInfo: (id, info) => set((s) => ({
-    orders: s.orders.map((o) => (o.id === id ? { ...o, ...info } : o)),
+    orders: saveAfterSalesOrders(s.orders.map((o) =>
+      o.id === id
+        ? {
+            ...o,
+            ...info,
+            status: 'PROCESSING',
+            history: [
+              ...o.history,
+              createHistoryEntry('提交退货处理方案'),
+            ],
+          }
+        : o
+    )),
   })),
   getOrderById: (id) => get().orders.find((o) => o.id === id),
   getOrdersBySourceOrderId: (sourceOrderId) =>
@@ -297,4 +374,38 @@ export const useAfterSalesStore = create<AfterSalesState>((set, get) => ({
       ).length,
     };
   },
+
+  processComplaint: (id, data) => {
+    get().setComplaintInfo(id, data);
+  },
+
+  resolveAndClose: (id, closingRemark) => set((s) => ({
+    orders: saveAfterSalesOrders(s.orders.map((o) =>
+      o.id === id
+        ? {
+            ...o,
+            status: 'CLOSED',
+            history: [
+              ...o.history,
+              createHistoryEntry('解决并关闭', closingRemark),
+            ],
+          }
+        : o
+    )),
+  })),
+
+  markProcessing: (id) => set((s) => ({
+    orders: saveAfterSalesOrders(s.orders.map((o) =>
+      o.id === id
+        ? {
+            ...o,
+            status: 'PROCESSING',
+            history: [
+              ...o.history,
+              createHistoryEntry('标记为处理中'),
+            ],
+          }
+        : o
+    )),
+  })),
 }));

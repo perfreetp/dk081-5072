@@ -62,6 +62,9 @@ export interface Order {
   buildingRuleId?: string;
   assignedRouteId?: string;
   assignedWorkerIds?: string[];
+  assignedWorkerNames?: string[];
+  assignedRouteNo?: string;
+  timeoutReassigned?: boolean;
   remarks?: string;
   createdAt: string;
   updatedAt: string;

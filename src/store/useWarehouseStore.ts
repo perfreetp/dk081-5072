@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import mockWarehouse from '@/data/mockWarehouse';
+import { storage } from '@/utils/storage';
 
 export type InventoryStatus = 'IN_STOCK' | 'INSPECTING' | 'RESTORING' | 'RESERVED' | 'SHIPPED' | 'SOLD' | 'DISCARDED' | 'RETURNING';
 export type QualityGrade = 'A_PLUS' | 'A' | 'B' | 'C' | 'D';
@@ -42,6 +43,19 @@ export interface InventoryItem {
   storedAt?: string;
   lastUpdatedAt: string;
   expectShipDate?: string;
+}
+
+interface InboundItemData {
+  recycleOrderNo: string;
+  category: string;
+  name: string;
+  quantity: number;
+  volume: number;
+  weight: number;
+  defectRecord: string;
+  missingParts: string[] | string;
+  refurbishPlan: string;
+  estimatedCost?: number;
 }
 
 interface WarehouseFilters {
@@ -101,10 +115,51 @@ interface WarehouseState {
     totalVolume: number;
     totalWeight: number;
   };
+
+  createInboundItem: (data: InboundItemData) => void;
+  markOrderItemsShipped: (sourceOrderIdOrReservedId: string) => void;
 }
 
+const saveItems = (items: InventoryItem[]): InventoryItem[] => {
+  storage.set('warehouseItems', items);
+  return items;
+};
+
+const categoryCodeMap: Record<string, string> = {
+  '三人沙发': 'SF',
+  '茶几': 'CJ',
+  '床': 'CH',
+  '床垫': 'CD',
+  '衣柜': 'YG',
+  '餐桌': 'CZ',
+  '椅子': 'YZ',
+  '书桌': 'SZ',
+  '书柜': 'SG',
+  '电视柜': 'DS',
+};
+
+const generateSku = (category: string, idx: number): string => {
+  const code = categoryCodeMap[category] || 'OT';
+  return `SKU-${code}-${String(idx).padStart(4, '0')}`;
+};
+
+const generatePositionCode = (idx: number): WarehouseLocation => {
+  const zones = ['A', 'B', 'C', 'D'];
+  const zone = zones[idx % zones.length];
+  const row = Math.floor(idx / zones.length) % 10 + 1;
+  const shelf = Math.floor(idx / (zones.length * 10)) % 5 + 1;
+  const level = Math.floor(idx / (zones.length * 10 * 5)) % 4 + 1;
+  return {
+    zone,
+    row,
+    shelf,
+    level,
+    positionCode: `${zone}-${String(row).padStart(2, '0')}-${String(shelf).padStart(2, '0')}-${level}`,
+  };
+};
+
 export const useWarehouseStore = create<WarehouseState>((set, get) => ({
-  items: mockWarehouse as InventoryItem[],
+  items: storage.get('warehouseItems', mockWarehouse as InventoryItem[]) as InventoryItem[],
   selectedIds: [],
   filters: {},
   activeTab: 'ALL',
@@ -126,69 +181,69 @@ export const useWarehouseStore = create<WarehouseState>((set, get) => ({
   addItem: (item) => set((s) => {
     const now = new Date().toISOString();
     const id = `INV${String(s.items.length + 1).padStart(3, '0')}`;
-    return { items: [...s.items, { ...item, id, lastUpdatedAt: now }] };
+    return { items: saveItems([...s.items, { ...item, id, lastUpdatedAt: now }]) };
   }),
   updateItem: (id, data) => set((s) => ({
-    items: s.items.map((it) => it.id === id ? { ...it, ...data, lastUpdatedAt: new Date().toISOString() } : it),
+    items: saveItems(s.items.map((it) => it.id === id ? { ...it, ...data, lastUpdatedAt: new Date().toISOString() } : it)),
   })),
   deleteItem: (id) => set((s) => ({
-    items: s.items.filter((it) => it.id !== id),
+    items: saveItems(s.items.filter((it) => it.id !== id)),
   })),
   updateStatus: (id, status) => set((s) => ({
-    items: s.items.map((it) => it.id === id ? { ...it, status, lastUpdatedAt: new Date().toISOString() } : it),
+    items: saveItems(s.items.map((it) => it.id === id ? { ...it, status, lastUpdatedAt: new Date().toISOString() } : it)),
   })),
   updateQualityGrade: (id, grade) => set((s) => ({
-    items: s.items.map((it) => it.id === id ? { ...it, qualityGrade: grade, lastUpdatedAt: new Date().toISOString() } : it),
+    items: saveItems(s.items.map((it) => it.id === id ? { ...it, qualityGrade: grade, lastUpdatedAt: new Date().toISOString() } : it)),
   })),
   updateLocation: (id, location) => set((s) => ({
-    items: s.items.map((it) => it.id === id ? { ...it, location, lastUpdatedAt: new Date().toISOString() } : it),
+    items: saveItems(s.items.map((it) => it.id === id ? { ...it, location, lastUpdatedAt: new Date().toISOString() } : it)),
   })),
   updatePricing: (id, purchasePrice, sellingPrice) => set((s) => ({
-    items: s.items.map((it) => {
+    items: saveItems(s.items.map((it) => {
       if (it.id !== id) return it;
       const updated: InventoryItem = { ...it, lastUpdatedAt: new Date().toISOString() };
       if (purchasePrice !== undefined) updated.purchasePrice = purchasePrice;
       if (sellingPrice !== undefined) updated.sellingPrice = sellingPrice;
       return updated;
-    }),
+    })),
   })),
   reserveItem: (id, orderId, customerName, expectShipDate) => set((s) => ({
-    items: s.items.map((it) => it.id === id
+    items: saveItems(s.items.map((it) => it.id === id
       ? { ...it, status: 'RESERVED', reservedOrderId: orderId, reservedCustomerName: customerName, expectShipDate, lastUpdatedAt: new Date().toISOString() }
-      : it),
+      : it)),
   })),
   cancelReservation: (id) => set((s) => ({
-    items: s.items.map((it) => it.id === id
+    items: saveItems(s.items.map((it) => it.id === id
       ? { ...it, status: 'IN_STOCK', reservedOrderId: undefined, reservedCustomerName: undefined, expectShipDate: undefined, lastUpdatedAt: new Date().toISOString() }
-      : it),
+      : it)),
   })),
   markAsInspected: (id, inspectionNote) => set((s) => ({
-    items: s.items.map((it) => it.id === id
+    items: saveItems(s.items.map((it) => it.id === id
       ? { ...it, status: 'INSPECTING', inspectedAt: new Date().toISOString(), inspectionNote, lastUpdatedAt: new Date().toISOString() }
-      : it),
+      : it)),
   })),
   markAsStored: (id) => set((s) => ({
-    items: s.items.map((it) => it.id === id
+    items: saveItems(s.items.map((it) => it.id === id
       ? { ...it, status: 'IN_STOCK', storedAt: new Date().toISOString(), lastUpdatedAt: new Date().toISOString() }
-      : it),
+      : it)),
   })),
   markAsShipped: (id) => set((s) => ({
-    items: s.items.map((it) => it.id === id ? { ...it, status: 'SHIPPED', lastUpdatedAt: new Date().toISOString() } : it),
+    items: saveItems(s.items.map((it) => it.id === id ? { ...it, status: 'SHIPPED', lastUpdatedAt: new Date().toISOString() } : it)),
   })),
   markAsSold: (id, soldPrice) => set((s) => ({
-    items: s.items.map((it) => it.id === id
+    items: saveItems(s.items.map((it) => it.id === id
       ? { ...it, status: 'SOLD', sellingPrice: soldPrice, lastUpdatedAt: new Date().toISOString() }
-      : it),
+      : it)),
   })),
   markAsDiscarded: (id, reason) => set((s) => ({
-    items: s.items.map((it) => it.id === id
+    items: saveItems(s.items.map((it) => it.id === id
       ? { ...it, status: 'DISCARDED', inspectionNote: reason, lastUpdatedAt: new Date().toISOString() }
-      : it),
+      : it)),
   })),
   addDefectRecord: (id, defect) => set((s) => ({
-    items: s.items.map((it) => it.id === id
+    items: saveItems(s.items.map((it) => it.id === id
       ? { ...it, defectDescription: it.defectDescription ? `${it.defectDescription}\n${defect}` : defect, lastUpdatedAt: new Date().toISOString() }
-      : it),
+      : it)),
   })),
   getItemById: (id) => get().items.find((it) => it.id === id),
   getItemsByOrderId: (orderId) => get().items.filter((it) => it.sourceOrderId === orderId || it.reservedOrderId === orderId),
@@ -232,4 +287,51 @@ export const useWarehouseStore = create<WarehouseState>((set, get) => ({
       totalWeight: items.reduce((sum, it) => sum + it.weight * it.quantity, 0),
     };
   },
+
+  createInboundItem: (data) => set((s) => {
+    const now = new Date().toISOString();
+    const nextIdx = s.items.length + 1;
+    const id = `INV${String(nextIdx).padStart(3, '0')}`;
+    const sku = generateSku(data.category, nextIdx);
+    const location = generatePositionCode(nextIdx);
+    const missingPartsStr = Array.isArray(data.missingParts)
+      ? data.missingParts.join('、')
+      : data.missingParts;
+    const defectDesc = [data.defectRecord, missingPartsStr, data.refurbishPlan]
+      .filter(Boolean)
+      .join('\n');
+
+    const newItem: InventoryItem = {
+      id,
+      sku,
+      category: data.category,
+      name: data.name,
+      brand: '未知品牌',
+      quantity: data.quantity,
+      unit: '件',
+      volume: data.volume,
+      weight: data.weight,
+      qualityGrade: 'B',
+      status: 'INSPECTING',
+      location,
+      sourceOrderNo: data.recycleOrderNo,
+      sourceType: 'RECYCLE',
+      defectDescription: defectDesc || undefined,
+      warehouseId: 'WH001',
+      warehouseName: '主仓库',
+      receivedAt: now,
+      lastUpdatedAt: now,
+    };
+
+    return { items: saveItems([...s.items, newItem]) };
+  }),
+
+  markOrderItemsShipped: (sourceOrderIdOrReservedId) => set((s) => ({
+    items: saveItems(s.items.map((it) => {
+      const match = it.sourceOrderId === sourceOrderIdOrReservedId
+        || it.reservedOrderId === sourceOrderIdOrReservedId;
+      if (!match) return it;
+      return { ...it, status: 'SHIPPED', lastUpdatedAt: new Date().toISOString() };
+    })),
+  })),
 }));

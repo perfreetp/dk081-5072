@@ -29,6 +29,7 @@ import {
   Trash2,
   Sparkles,
   TrendingUp,
+  Check,
 } from 'lucide-react';
 import { useAfterSalesStore } from '@/store/useAfterSalesStore';
 import type {
@@ -570,6 +571,30 @@ function OrderDetail({ order }: { order: AfterSalesOrder }) {
   const typeConfig = TYPE_CONFIG[order.type];
   const TypeIcon = typeConfig.icon;
   const [remark, setRemark] = useState('');
+  const { updateStatus, addHistory } = useAfterSalesStore();
+  const [processing, setProcessing] = useState(false);
+  const [closing, setClosing] = useState(false);
+
+  const handleMarkProcessing = () => {
+    setProcessing(true);
+    updateStatus(order.id, 'PROCESSING');
+    addHistory(order.id, '标记处理中', '当前用户', '客服主管');
+    setTimeout(() => setProcessing(false), 1500);
+  };
+
+  const handleClose = () => {
+    setClosing(true);
+    updateStatus(order.id, 'CLOSED');
+    addHistory(order.id, '工单解决并关闭', '当前用户', '客服主管', remark);
+    setRemark('');
+    setTimeout(() => setClosing(false), 1500);
+  };
+
+  const handleSendRemark = () => {
+    if (!remark.trim()) return;
+    addHistory(order.id, '处理备注', '当前用户', '客服', remark.trim());
+    setRemark('');
+  };
 
   return (
     <div className="p-5 space-y-5">
@@ -692,18 +717,47 @@ function OrderDetail({ order }: { order: AfterSalesOrder }) {
             onChange={(e) => setRemark(e.target.value)}
             className="input resize-none pr-12"
           />
-          <button className="absolute right-2.5 bottom-2.5 w-8 h-8 rounded-lg bg-brand-orange text-white flex items-center justify-center hover:bg-brand-orange-dark transition-colors">
+          <button
+            onClick={handleSendRemark}
+            className="absolute right-2.5 bottom-2.5 w-8 h-8 rounded-lg bg-brand-orange text-white flex items-center justify-center hover:bg-brand-orange-dark transition-colors"
+          >
             <Send className="w-4 h-4" />
           </button>
         </div>
         <div className="flex items-center gap-2 justify-end">
-          <button className="btn-secondary">
-            <RefreshCw className="w-4 h-4" />
-            标记处理中
+          <button
+            className="btn-secondary"
+            onClick={handleMarkProcessing}
+            disabled={processing}
+          >
+            {processing ? (
+              <>
+                <Check className="w-4 h-4" />
+                已标记处理中
+              </>
+            ) : (
+              <>
+                <RefreshCw className="w-4 h-4" />
+                标记处理中
+              </>
+            )}
           </button>
-          <button className="btn-primary">
-            <CheckCircle2 className="w-4 h-4" />
-            解决并关闭
+          <button
+            className="btn-primary"
+            onClick={handleClose}
+            disabled={closing}
+          >
+            {closing ? (
+              <>
+                <Check className="w-4 h-4" />
+                已关闭
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-4 h-4" />
+                解决并关闭
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -736,6 +790,24 @@ function InfoRow({
 }
 
 function RescheduleForm({ order }: { order: AfterSalesOrder }) {
+  const [newAppointment, setNewAppointment] = useState(order.newAppointment || '');
+  const [rescheduleReason, setRescheduleReason] = useState(order.rescheduleReason || '');
+  const [submitted, setSubmitted] = useState(false);
+  const { setRescheduleInfo, addHistory, updateStatus } = useAfterSalesStore();
+
+  const handleSubmit = () => {
+    setSubmitted(true);
+    setRescheduleInfo(order.id, {
+      originalAppointment: order.originalAppointment,
+      newAppointment,
+      rescheduleReason,
+      rescheduleFee: order.rescheduleFee || 0,
+    });
+    addHistory(order.id, '确认改约', '当前用户', '客服主管', rescheduleReason);
+    updateStatus(order.id, 'PROCESSING');
+    setTimeout(() => setSubmitted(false), 1500);
+  };
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
@@ -752,8 +824,10 @@ function RescheduleForm({ order }: { order: AfterSalesOrder }) {
           <label className="block text-xs font-medium text-neutral-600 mb-1.5">新预约时间</label>
           <input
             type="text"
-            defaultValue={order.newAppointment || ''}
+            value={newAppointment}
+            onChange={(e) => setNewAppointment(e.target.value)}
             className="input"
+            placeholder="请输入新预约时间"
           />
         </div>
       </div>
@@ -761,7 +835,8 @@ function RescheduleForm({ order }: { order: AfterSalesOrder }) {
         <label className="block text-xs font-medium text-neutral-600 mb-1.5">改约原因</label>
         <input
           type="text"
-          defaultValue={order.rescheduleReason || ''}
+          value={rescheduleReason}
+          onChange={(e) => setRescheduleReason(e.target.value)}
           className="input"
           placeholder="请输入改约原因"
         />
@@ -772,16 +847,41 @@ function RescheduleForm({ order }: { order: AfterSalesOrder }) {
           ¥{order.rescheduleFee || 0}
         </span>
       </div>
-      <button className="w-full btn-primary">
-        <Calendar className="w-4 h-4" />
-        确认改约
+      <button
+        className="w-full btn-primary"
+        onClick={handleSubmit}
+        disabled={submitted}
+      >
+        {submitted ? (
+          <>
+            <Check className="w-4 h-4" />
+            改约已确认
+          </>
+        ) : (
+          <>
+            <Calendar className="w-4 h-4" />
+            确认改约
+          </>
+        )}
       </button>
     </div>
   );
 }
 
 function AddItemForm({ order }: { order: AfterSalesOrder }) {
-  const items = order.addedItems || [];
+  const [items, setItems] = useState(order.addedItems || []);
+  const [totalFee, setTotalFee] = useState(order.addItemTotalFee || 0);
+  const [submitted, setSubmitted] = useState(false);
+  const { setAddItemInfo, addHistory, updateStatus } = useAfterSalesStore();
+
+  const handleSubmit = () => {
+    setSubmitted(true);
+    setAddItemInfo(order.id, items, totalFee);
+    addHistory(order.id, '确认加项并更新订单', '当前用户', '客服主管');
+    updateStatus(order.id, 'PROCESSING');
+    setTimeout(() => setSubmitted(false), 1500);
+  };
+
   return (
     <div className="space-y-4">
       <div className="border border-neutral-200 rounded-lg overflow-hidden">
@@ -825,24 +925,61 @@ function AddItemForm({ order }: { order: AfterSalesOrder }) {
           加项总费用
         </span>
         <span className="text-xl font-bold text-purple-700">
-          {formatMoney(order.addItemTotalFee || 0)}
+          {formatMoney(totalFee)}
         </span>
       </div>
-      <button className="w-full btn-primary">
-        <CheckCircle2 className="w-4 h-4" />
-        确认加项并更新订单
+      <button
+        className="w-full btn-primary"
+        onClick={handleSubmit}
+        disabled={submitted}
+      >
+        {submitted ? (
+          <>
+            <Check className="w-4 h-4" />
+            已确认加项
+          </>
+        ) : (
+          <>
+            <CheckCircle2 className="w-4 h-4" />
+            确认加项并更新订单
+          </>
+        )}
       </button>
     </div>
   );
 }
 
 function ComplaintForm({ order }: { order: AfterSalesOrder }) {
+  const [category, setCategory] = useState<ComplaintCategory | ''>(order.complaintCategory || '');
+  const [responsibility, setResponsibility] = useState<Responsibility | ''>(order.responsibility || '');
+  const [involvedWorkerId, setInvolvedWorkerId] = useState(order.involvedWorkerId || '');
+  const [compensationAmount, setCompensationAmount] = useState<number>(order.compensationAmount || 0);
+  const [appeasementPlan, setAppeasementPlan] = useState(order.appeasementPlan || '');
+  const [submitted, setSubmitted] = useState(false);
+  const { setComplaintInfo, addHistory, updateStatus } = useAfterSalesStore();
+
+  const handleSubmit = () => {
+    setSubmitted(true);
+    const involvedWorker = WORKER_OPTIONS.find((w) => w.value === involvedWorkerId);
+    setComplaintInfo(order.id, {
+      category: category || undefined,
+      responsibility: responsibility || undefined,
+      involvedWorkerId: involvedWorkerId || undefined,
+      involvedWorkerName: involvedWorker?.label,
+      compensationAmount,
+      appeasementPlan,
+    });
+    addHistory(order.id, '提交投诉处理方案', '当前用户', '客服主管', appeasementPlan);
+    updateStatus(order.id, 'PROCESSING');
+    setTimeout(() => setSubmitted(false), 1500);
+  };
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-medium text-neutral-600 mb-1.5">投诉分类</label>
-          <select defaultValue={order.complaintCategory} className="input">
+          <select value={category} onChange={(e) => setCategory(e.target.value as ComplaintCategory)} className="input">
             <option value="">请选择</option>
             {COMPLAINT_CATEGORY_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
@@ -851,7 +988,7 @@ function ComplaintForm({ order }: { order: AfterSalesOrder }) {
         </div>
         <div>
           <label className="block text-xs font-medium text-neutral-600 mb-1.5">责任认定</label>
-          <select defaultValue={order.responsibility} className="input">
+          <select value={responsibility} onChange={(e) => setResponsibility(e.target.value as Responsibility)} className="input">
             <option value="">待认定</option>
             {RESPONSIBILITY_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
@@ -861,7 +998,7 @@ function ComplaintForm({ order }: { order: AfterSalesOrder }) {
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-600 mb-1.5">涉事师傅</label>
-        <select defaultValue={order.involvedWorkerId} className="input">
+        <select value={involvedWorkerId} onChange={(e) => setInvolvedWorkerId(e.target.value)} className="input">
           <option value="">请选择</option>
           {WORKER_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
@@ -875,7 +1012,8 @@ function ComplaintForm({ order }: { order: AfterSalesOrder }) {
         </label>
         <input
           type="number"
-          defaultValue={order.compensationAmount}
+          value={compensationAmount}
+          onChange={(e) => setCompensationAmount(Number(e.target.value))}
           className="input"
           placeholder="请输入赔偿金额"
         />
@@ -884,7 +1022,8 @@ function ComplaintForm({ order }: { order: AfterSalesOrder }) {
         <label className="block text-xs font-medium text-neutral-600 mb-1.5">安抚方案</label>
         <textarea
           rows={3}
-          defaultValue={order.appeasementPlan}
+          value={appeasementPlan}
+          onChange={(e) => setAppeasementPlan(e.target.value)}
           placeholder="详细描述安抚方案..."
           className="input resize-none"
         />
@@ -895,23 +1034,55 @@ function ComplaintForm({ order }: { order: AfterSalesOrder }) {
           赔偿金额合计
         </span>
         <span className="text-xl font-bold text-rose-700">
-          {formatMoney(order.compensationAmount || 0)}
+          {formatMoney(compensationAmount || 0)}
         </span>
       </div>
-      <button className="w-full btn-primary">
-        <Send className="w-4 h-4" />
-        提交处理方案
+      <button
+        className="w-full btn-primary"
+        onClick={handleSubmit}
+        disabled={submitted}
+      >
+        {submitted ? (
+          <>
+            <Check className="w-4 h-4" />
+            方案已提交
+          </>
+        ) : (
+          <>
+            <Send className="w-4 h-4" />
+            提交处理方案
+          </>
+        )}
       </button>
     </div>
   );
 }
 
 function ReturnForm({ order }: { order: AfterSalesOrder }) {
+  const [returnReason, setReturnReason] = useState(order.returnReason || '');
+  const [returnInspectionResult, setReturnInspectionResult] = useState(order.returnInspectionResult || '');
+  const [secondLifeStatus, setSecondLifeStatus] = useState(order.secondLifeStatus);
+  const [submitted, setSubmitted] = useState(false);
+  const { setReturnInfo, addHistory, updateStatus } = useAfterSalesStore();
+
   const secondLifeOptions = [
-    { value: 'REFURBISH', label: '翻新后再售', icon: Sparkles, color: 'bg-blue-50 text-blue-700 border-blue-200' },
-    { value: 'SCRAP', label: '报废处理', icon: Trash2, color: 'bg-red-50 text-red-700 border-red-200' },
-    { value: 'RELIST', label: '重新上架', icon: RotateCcw, color: 'bg-green-50 text-green-700 border-green-200' },
+    { value: 'REFURBISH' as const, label: '翻新后再售', icon: Sparkles, color: 'bg-blue-50 text-blue-700 border-blue-200' },
+    { value: 'SCRAP' as const, label: '报废处理', icon: Trash2, color: 'bg-red-50 text-red-700 border-red-200' },
+    { value: 'RELIST' as const, label: '重新上架', icon: RotateCcw, color: 'bg-green-50 text-green-700 border-green-200' },
   ];
+
+  const handleSubmit = () => {
+    setSubmitted(true);
+    setReturnInfo(order.id, {
+      returnReason,
+      returnInspectionResult,
+      returnRefundAmount: order.returnRefundAmount || 0,
+      secondLifeStatus,
+    });
+    addHistory(order.id, '确认退货并退款', '当前用户', '客服主管', returnReason);
+    updateStatus(order.id, 'PROCESSING');
+    setTimeout(() => setSubmitted(false), 1500);
+  };
 
   return (
     <div className="space-y-4">
@@ -919,7 +1090,8 @@ function ReturnForm({ order }: { order: AfterSalesOrder }) {
         <label className="block text-xs font-medium text-neutral-600 mb-1.5">退货原因</label>
         <input
           type="text"
-          defaultValue={order.returnReason}
+          value={returnReason}
+          onChange={(e) => setReturnReason(e.target.value)}
           className="input"
           placeholder="请输入退货原因"
         />
@@ -928,7 +1100,8 @@ function ReturnForm({ order }: { order: AfterSalesOrder }) {
         <label className="block text-xs font-medium text-neutral-600 mb-1.5">检测结果</label>
         <textarea
           rows={2}
-          defaultValue={order.returnInspectionResult}
+          value={returnInspectionResult}
+          onChange={(e) => setReturnInspectionResult(e.target.value)}
           placeholder="请填写仓内检测结果..."
           className="input resize-none"
         />
@@ -947,10 +1120,12 @@ function ReturnForm({ order }: { order: AfterSalesOrder }) {
         <div className="grid grid-cols-3 gap-2">
           {secondLifeOptions.map((opt) => {
             const IconComp = opt.icon;
-            const selected = order.secondLifeStatus === opt.value;
+            const selected = secondLifeStatus === opt.value;
             return (
               <button
                 key={opt.value}
+                type="button"
+                onClick={() => setSecondLifeStatus(opt.value)}
                 className={clsx(
                   'p-3 rounded-lg border-2 flex flex-col items-center gap-1.5 transition-all',
                   selected ? opt.color : 'border-neutral-200 text-neutral-500 hover:border-neutral-300 hover:bg-neutral-50'
@@ -963,9 +1138,22 @@ function ReturnForm({ order }: { order: AfterSalesOrder }) {
           })}
         </div>
       </div>
-      <button className="w-full btn-primary">
-        <CheckCircle2 className="w-4 h-4" />
-        确认退货并退款
+      <button
+        className="w-full btn-primary"
+        onClick={handleSubmit}
+        disabled={submitted}
+      >
+        {submitted ? (
+          <>
+            <Check className="w-4 h-4" />
+            已确认退货
+          </>
+        ) : (
+          <>
+            <CheckCircle2 className="w-4 h-4" />
+            确认退货并退款
+          </>
+        )}
       </button>
     </div>
   );

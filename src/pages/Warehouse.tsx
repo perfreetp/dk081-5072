@@ -29,10 +29,10 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import StatCard from '@/components/common/StatCard';
-import mockWarehouse, { InventoryItem, QualityGrade } from '@/data/mockWarehouse';
 import mockBuildingRules, { BuildingRule } from '@/data/mockBuildingRules';
 import { getInitials } from '@/utils/formatters';
-import clsx from 'clsx';
+import { clsx } from 'clsx';
+import { useWarehouseStore, type InventoryItem, type QualityGrade } from '@/store/useWarehouseStore';
 
 type WarehouseTab = 'KANBAN' | 'INBOUND' | 'OUTBOUND' | 'RULES';
 type KanbanColumn = 'QC_PENDING' | 'CLEANING' | 'REPAIRING' | 'PAINTING' | 'RECHECK' | 'FOR_SALE';
@@ -96,19 +96,36 @@ interface KanbanItem {
   column: KanbanColumn;
 }
 
-function createKanbanData(): KanbanItem[] {
-  const columns: KanbanColumn[] = ['QC_PENDING', 'CLEANING', 'REPAIRING', 'PAINTING', 'RECHECK', 'FOR_SALE'];
-  return mockWarehouse.slice(0, 18).map((item, idx) => ({
-    id: item.id,
-    name: item.name,
-    sku: item.sku,
-    category: item.category,
-    qualityGrade: item.qualityGrade,
-    location: item.location.positionCode,
-    estimatedComplete: `6月${18 + (idx % 12)}日 ${9 + (idx % 8)}:${idx % 2 ? '30' : '00'}`,
-    assignee: ASSIGNEES[idx % ASSIGNEES.length],
-    column: columns[idx % columns.length],
-  }));
+function mapInventoryToKanban(items: InventoryItem[]): KanbanItem[] {
+  return items.map((item, idx) => {
+    let column: KanbanColumn = 'QC_PENDING';
+
+    if (item.status === 'INSPECTING') {
+      column = 'QC_PENDING';
+    } else if (item.status === 'RESTORING' || item.status.includes('CLEAN')) {
+      column = 'CLEANING';
+    } else if (item.status === 'IN_STOCK' && item.sellingPrice) {
+      column = 'FOR_SALE';
+    } else if (item.qualityGrade === 'A_PLUS') {
+      column = 'RECHECK';
+    } else if (item.qualityGrade === 'A' || item.qualityGrade === 'B') {
+      column = 'REPAIRING';
+    } else {
+      column = 'PAINTING';
+    }
+
+    return {
+      id: item.id,
+      name: item.name,
+      sku: item.sku,
+      category: item.category,
+      qualityGrade: item.qualityGrade,
+      location: item.location.positionCode,
+      estimatedComplete: `6月${18 + (idx % 12)}日 ${9 + (idx % 8)}:${idx % 2 ? '30' : '00'}`,
+      assignee: ASSIGNEES[idx % ASSIGNEES.length],
+      column,
+    };
+  });
 }
 
 interface InboundFormData {
@@ -174,28 +191,36 @@ const mockOutboundOrders: OutboundOrder[] = [
   },
 ];
 
+const INITIAL_INBOUND_FORM: InboundFormData = {
+  recycleOrderNo: '',
+  category: '',
+  name: '',
+  quantity: 1,
+  volume: 0,
+  weight: 0,
+  defectRecord: '',
+  missingParts: [],
+  refurbishPlan: 'STANDARD',
+  estimatedCost: 120,
+};
+
 function getCategoryIcon(category: string) {
   return CATEGORY_ICONS[category] || Package;
 }
 
 export default function Warehouse() {
   const [activeTab, setActiveTab] = useState<WarehouseTab>('KANBAN');
-  const kanbanData = useMemo(() => createKanbanData(), []);
   const [buildingRuleSearch, setBuildingRuleSearch] = useState('');
-  const [inboundForm, setInboundForm] = useState<InboundFormData>({
-    recycleOrderNo: '',
-    category: '',
-    name: '',
-    quantity: 1,
-    volume: 0,
-    weight: 0,
-    defectRecord: '',
-    missingParts: [],
-    refurbishPlan: 'STANDARD',
-    estimatedCost: 120,
-  });
+  const [inboundForm, setInboundForm] = useState<InboundFormData>(INITIAL_INBOUND_FORM);
   const [outboundSearch, setOutboundSearch] = useState('');
   const [outboundOrders, setOutboundOrders] = useState(mockOutboundOrders);
+  const [inboundSubmitting, setInboundSubmitting] = useState(false);
+  const [inboundSuccess, setInboundSuccess] = useState(false);
+
+  const { items, getStats, createInboundItem, markOrderItemsShipped } = useWarehouseStore();
+  const stats = getStats();
+
+  const kanbanData = useMemo(() => mapInventoryToKanban(items), [items]);
 
   const filteredBuildingRules = useMemo(() => {
     if (!buildingRuleSearch) return mockBuildingRules;
@@ -251,15 +276,50 @@ export default function Warehouse() {
     }));
   };
 
+  const handleInboundSubmit = () => {
+    if (!inboundForm.category || !inboundForm.name || !inboundForm.quantity || !inboundForm.recycleOrderNo) {
+      alert('请填写必填项：品类、名称、数量、关联回收单号');
+      return;
+    }
+
+    setInboundSubmitting(true);
+    createInboundItem(inboundForm);
+    setInboundSuccess(true);
+
+    setTimeout(() => {
+      setInboundSuccess(false);
+      setInboundSubmitting(false);
+      setInboundForm({ ...INITIAL_INBOUND_FORM });
+    }, 1500);
+  };
+
+  const handleOutboundComplete = (orderId: string) => {
+    const order = outboundOrders.find((o) => o.id === orderId);
+    if (!order) return;
+
+    const allChecked = order.items.every((i) => i.checked);
+    if (!allChecked) return;
+
+    markOrderItemsShipped(order.orderNo);
+
+    setOutboundOrders((prev) =>
+      prev.map((o) =>
+        o.id === orderId
+          ? { ...o, qcStatus: 'CHECKED' as const }
+          : o
+      )
+    );
+  };
+
   return (
     <div className="space-y-5 p-6">
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <StatCard title="库存总数" value={mockWarehouse.length} icon={Package} colorScheme="blue" trend={{ value: 5.2 }} />
-        <StatCard title="待翻新" value={mockWarehouse.filter((i) => i.status === 'INSPECTING' || i.status === 'RESTORING').length} icon={RefreshCw} colorScheme="purple" trend={{ value: 2.1 }} />
-        <StatCard title="可售" value={mockWarehouse.filter((i) => i.status === 'IN_STOCK').length} icon={ShoppingBag} colorScheme="green" trend={{ value: 8.7 }} />
+        <StatCard title="库存总数" value={stats.total} icon={Package} colorScheme="blue" trend={{ value: 5.2 }} />
+        <StatCard title="待翻新" value={stats.inspecting + stats.restoring} icon={RefreshCw} colorScheme="purple" trend={{ value: 2.1 }} />
+        <StatCard title="可售" value={stats.inStock} icon={ShoppingBag} colorScheme="green" trend={{ value: 8.7 }} />
         <StatCard title="今日入库" value={12} icon={ArrowDownToLine} colorScheme="cyan" trend={{ value: 15.3 }} suffix="件" />
-        <StatCard title="今日出库" value={8} icon={ArrowUpFromLine} colorScheme="amber" trend={{ value: -3.2 }} suffix="件" />
-        <StatCard title="翻新中" value={mockWarehouse.filter((i) => i.status === 'RESTORING').length + 6} icon={Sparkles} colorScheme="orange" trend={{ value: 1.8 }} suffix="件" />
+        <StatCard title="今日出库" value={stats.shipped} icon={ArrowUpFromLine} colorScheme="amber" trend={{ value: -3.2 }} suffix="件" />
+        <StatCard title="翻新中" value={stats.restoring} icon={Sparkles} colorScheme="orange" trend={{ value: 1.8 }} suffix="件" />
       </div>
 
       <div className="card overflow-hidden">
@@ -298,6 +358,9 @@ export default function Warehouse() {
               setFormData={setInboundForm}
               toggleMissingPart={toggleMissingPart}
               handleRefurbishPlanChange={handleRefurbishPlanChange}
+              onSubmit={handleInboundSubmit}
+              isSubmitting={inboundSubmitting}
+              isSuccess={inboundSuccess}
             />
           )}
           {activeTab === 'OUTBOUND' && (
@@ -306,6 +369,7 @@ export default function Warehouse() {
               setSearchValue={setOutboundSearch}
               orders={filteredOutboundOrders}
               toggleItem={toggleOutboundItem}
+              onComplete={handleOutboundComplete}
             />
           )}
           {activeTab === 'RULES' && (
@@ -414,11 +478,17 @@ function InboundSection({
   setFormData,
   toggleMissingPart,
   handleRefurbishPlanChange,
+  onSubmit,
+  isSubmitting,
+  isSuccess,
 }: {
   formData: InboundFormData;
   setFormData: React.Dispatch<React.SetStateAction<InboundFormData>>;
   toggleMissingPart: (part: string) => void;
   handleRefurbishPlanChange: (plan: string) => void;
+  onSubmit: () => void;
+  isSubmitting: boolean;
+  isSuccess: boolean;
 }) {
   const selectedPlan = REFURBISH_PLANS.find((p) => p.value === formData.refurbishPlan);
 
@@ -580,9 +650,26 @@ function InboundSection({
           </div>
         </div>
 
-        <button className="w-full btn-primary py-3 text-base">
-          <Upload className="w-4 h-4" />
-          提交入库
+        <button
+          onClick={onSubmit}
+          disabled={isSubmitting}
+          className={clsx(
+            'w-full btn-primary py-3 text-base',
+            isSuccess && 'bg-green-600 hover:bg-green-600',
+            isSubmitting && !isSuccess && 'opacity-70 cursor-not-allowed'
+          )}
+        >
+          {isSuccess ? (
+            <>
+              <CheckCircle2 className="w-4 h-4" />
+              入库成功
+            </>
+          ) : (
+            <>
+              <Upload className="w-4 h-4" />
+              提交入库
+            </>
+          )}
         </button>
       </div>
 
@@ -637,11 +724,13 @@ function OutboundSection({
   setSearchValue,
   orders,
   toggleItem,
+  onComplete,
 }: {
   searchValue: string;
   setSearchValue: (v: string) => void;
   orders: OutboundOrder[];
   toggleItem: (orderId: string, itemId: string) => void;
+  onComplete: (orderId: string) => void;
 }) {
   return (
     <div className="space-y-5">
@@ -666,6 +755,7 @@ function OutboundSection({
         {orders.map((order) => {
           const allChecked = order.items.every((i) => i.checked);
           const checkedCount = order.items.filter((i) => i.checked).length;
+          const isCompleted = order.qcStatus === 'CHECKED';
           return (
             <div key={order.id} className="card border border-neutral-100 overflow-hidden">
               <div className="p-4 border-b border-neutral-100 bg-neutral-50/50 flex items-center justify-between">
@@ -748,9 +838,26 @@ function OutboundSection({
                     <Printer className="w-4 h-4" />
                     打印出库单
                   </button>
-                  <button className={clsx('btn-primary', !allChecked && 'opacity-50 cursor-not-allowed')} disabled={!allChecked}>
-                    <Handshake className="w-4 h-4" />
-                    完成交接
+                  <button
+                    onClick={() => onComplete(order.id)}
+                    disabled={!allChecked || isCompleted}
+                    className={clsx(
+                      'btn-primary',
+                      (!allChecked || isCompleted) && 'opacity-50 cursor-not-allowed',
+                      isCompleted && 'bg-green-600 hover:bg-green-600'
+                    )}
+                  >
+                    {isCompleted ? (
+                      <>
+                        <CheckCircle2 className="w-4 h-4" />
+                        交接完成
+                      </>
+                    ) : (
+                      <>
+                        <Handshake className="w-4 h-4" />
+                        完成交接
+                      </>
+                    )}
                   </button>
                 </div>
               </div>

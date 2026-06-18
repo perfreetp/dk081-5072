@@ -18,12 +18,13 @@ import {
   PackagePlus,
   ArrowLeftRight,
   UserCheck,
+  Check,
 } from 'lucide-react';
 import StatCard from '@/components/common/StatCard';
 import { useRouteStore, type Route } from '@/store/useRouteStore';
 import { useOrderStore } from '@/store/useOrderStore';
 import { formatDate, getTimeSlotLabel, getInitials } from '@/utils/formatters';
-import type { TimeSlot, VehicleType } from '@/types/order';
+import type { Order, TimeSlot, VehicleType } from '@/types/order';
 
 type TimeSlotFilter = 'ALL' | TimeSlot;
 
@@ -251,12 +252,32 @@ function RouteCard({
 
 function PendingOrderItem({
   order,
-  onAdd,
+  selectedRouteId,
+  addOrderToRoute,
+  assignOrderToRoute,
+  getRouteById,
 }: {
-  order: ReturnType<typeof useOrderStore.getState>['orders'][number];
-  onAdd: () => void;
+  order: Order;
+  selectedRouteId: string | null;
+  addOrderToRoute: (routeId: string, order: Order) => void;
+  assignOrderToRoute: (orderId: string, routeId: string, routeNo?: string) => void;
+  getRouteById: (id: string) => Route | undefined;
 }) {
+  const [added, setAdded] = useState(false);
   const slotLabel = getTimeSlotLabel(order.appointmentSlot);
+
+  const handleAdd = () => {
+    if (!selectedRouteId) {
+      alert('请先从左侧选择一条线路');
+      return;
+    }
+    const route = getRouteById(selectedRouteId);
+    addOrderToRoute(selectedRouteId, order);
+    assignOrderToRoute(order.id, selectedRouteId, route?.routeNo);
+    setAdded(true);
+    setTimeout(() => setAdded(false), 1000);
+  };
+
   return (
     <div className="flex items-start gap-3 p-3 rounded-lg border border-neutral-100 hover:border-neutral-200 hover:bg-neutral-50/50 transition-colors">
       <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
@@ -280,10 +301,28 @@ function PendingOrderItem({
           <span>·</span>
           <span>{order.totalWeight}kg</span>
         </div>
+        {order.assignedRouteNo && (
+          <div className="mt-1.5">
+            <span className="chip bg-green-50 text-green-700 text-[10px]">已排线路：{order.assignedRouteNo}</span>
+          </div>
+        )}
       </div>
-      <button onClick={onAdd} className="btn-primary !py-1.5 !px-3 text-xs shrink-0">
-        <PackagePlus className="w-3.5 h-3.5" />
-        加入
+      <button
+        onClick={handleAdd}
+        disabled={added}
+        className={`btn-primary !py-1.5 !px-3 text-xs shrink-0 ${added ? '!bg-green-600 !border-green-600' : ''}`}
+      >
+        {added ? (
+          <>
+            <Check className="w-3.5 h-3.5" />
+            已加入
+          </>
+        ) : (
+          <>
+            <PackagePlus className="w-3.5 h-3.5" />
+            加入
+          </>
+        )}
       </button>
     </div>
   );
@@ -297,8 +336,8 @@ export default function Routing() {
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [areaDropdownOpen, setAreaDropdownOpen] = useState(false);
 
-  const { routes } = useRouteStore();
-  const { orders } = useOrderStore();
+  const { routes, addOrderToRoute, autoOptimizeRoutes, getRouteById } = useRouteStore();
+  const { orders, assignOrderToRoute } = useOrderStore();
 
   const dateRoutes = useMemo(() => {
     return routes.filter((r) => r.date === currentDate).filter((r) => {
@@ -391,6 +430,21 @@ export default function Routing() {
     return `${d.getMonth() + 1}月${d.getDate()}日 ${weekdays[d.getDay()]}`;
   };
 
+  const handleAutoOptimize = () => {
+    const unassignedOrders = orders.filter(
+      (o) =>
+        o.appointmentDate === currentDate &&
+        o.status === 'PENDING' &&
+        !routes.some((r) => r.orderIds.includes(o.id))
+    );
+    if (unassignedOrders.length === 0) {
+      alert('当前没有可拼车的待排订单');
+      return;
+    }
+    const { mergedCount, newRoutesCount } = autoOptimizeRoutes(currentDate, unassignedOrders);
+    alert(`智能拼车完成：共合并 ${mergedCount} 单，生成 ${newRoutesCount} 条新线路`);
+  };
+
   return (
     <div className="space-y-5">
       <div className="card p-4">
@@ -462,7 +516,7 @@ export default function Routing() {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
-            <button className="btn-secondary">
+            <button className="btn-secondary" onClick={handleAutoOptimize}>
               <Sparkles className="w-4 h-4 text-brand-orange" />
               智能拼车优化
             </button>
@@ -568,7 +622,10 @@ export default function Routing() {
                     <PendingOrderItem
                       key={order.id}
                       order={order}
-                      onAdd={() => {}}
+                      selectedRouteId={selectedRouteId}
+                      addOrderToRoute={addOrderToRoute}
+                      assignOrderToRoute={assignOrderToRoute}
+                      getRouteById={getRouteById}
                     />
                   ))
                 )}
