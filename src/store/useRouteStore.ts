@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Order, Priority, TimeSlot, VehicleType } from '@/types/order';
 import mockRoutes from '@/data/mockRoutes';
 import { useOrderStore } from '@/store/useOrderStore';
+import { VEHICLE_PRESETS } from '@/data/categoryPresets';
 import { storage } from '@/utils/storage';
 
 export type RouteStatus = 'PLANNED' | 'DEPARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
@@ -96,8 +97,8 @@ interface RouteState {
   getFilteredRoutes: () => Route[];
   getStats: () => { total: number; planned: number; inProgress: number; completed: number; totalOrders: number; totalDistance: number };
 
-  addOrderToRoute: (routeId: string, order: Order) => void;
-  autoOptimizeRoutes: (date: string, unassignedOrders: Order[]) => { mergedCount: number; newRoutesCount: number };
+  addOrderToRoute: (routeId: string, order: Order) => { success: boolean; error?: string } | false;
+  autoOptimizeRoutes: (date: string, unassignedOrders: Order[]) => { mergedCount: number; newRoutesCount: number; splitCount: number };
 }
 
 const saveRoutes = (routes: Route[]): Route[] => {
@@ -106,8 +107,8 @@ const saveRoutes = (routes: Route[]): Route[] => {
 };
 
 const selectVehicleType = (totalVolume: number): VehicleType => {
-  if (totalVolume < 6) return 'VAN';
-  if (totalVolume < 12) return 'TRUCK_SMALL';
+  if (totalVolume <= VEHICLE_PRESETS.VAN.maxVolume) return 'VAN';
+  if (totalVolume <= VEHICLE_PRESETS.TRUCK_SMALL.maxVolume) return 'TRUCK_SMALL';
   return 'TRUCK_MEDIUM';
 };
 
@@ -286,29 +287,56 @@ export const useRouteStore = create<RouteState>((set, get) => ({
     };
   },
 
-  addOrderToRoute: (routeId, order) => set((s) => {
-    const stop = buildStopFromOrder(order, 0);
-    const updatedRoutes = s.routes.map((r) => {
-      if (r.id !== routeId) return r;
-      const newStop: RouteStop = { ...stop, id: `STOP${String(r.stops.length + 1).padStart(3, '0')}`, sequence: r.stops.length + 1 };
-      const newStops = [...r.stops, newStop];
-      const newOrderIds = [...new Set([...r.orderIds, order.id])];
-      return {
-        ...r,
-        stops: newStops,
-        orderIds: newOrderIds,
-        totalOrders: newStops.length,
-        totalVolume: newStops.reduce((sum, st) => sum + st.totalVolume, 0),
-        totalWeight: newStops.reduce((sum, st) => sum + st.totalWeight, 0),
-        updatedAt: new Date().toISOString(),
-      };
-    });
-    const targetRoute = updatedRoutes.find((r) => r.id === routeId);
-    if (targetRoute) {
-      useOrderStore.getState().assignOrderToRoute(order.id, routeId, targetRoute.routeNo);
+  addOrderToRoute: (routeId, order) => {
+    const route = get().routes.find((r) => r.id === routeId);
+    if (!route) return false;
+
+    const routeSlot = route.stops[0]
+      ? (() => {
+          const h = parseInt(route.stops[0].estimatedArrival.split(' ')[1].split(':')[0], 10);
+          if (h < 12) return 'MORNING';
+          if (h < 17) return 'AFTERNOON';
+          return 'EVENING';
+        })()
+      : null;
+
+    if (routeSlot && routeSlot !== order.appointmentSlot) {
+      return { success: false, error: '订单时段与当前车次时段不一致，请选择相同时段的车次' };
     }
-    return { routes: saveRoutes(updatedRoutes) };
-  }),
+
+    const maxVol = VEHICLE_PRESETS[route.vehicleType].maxVolume;
+    if (route.totalVolume + order.totalVolume > maxVol) {
+      return { success: false, error: `装载量超出车型上限（当前 ${route.totalVolume.toFixed(1)}m³ + 订单 ${order.totalVolume.toFixed(1)}m³ > ${maxVol}m³）` };
+    }
+
+    const stop = buildStopFromOrder(order, 0);
+    set((s) => {
+      const updatedRoutes = s.routes.map((r) => {
+        if (r.id !== routeId) return r;
+        const newStop: RouteStop = { ...stop, id: `STOP${String(r.stops.length + 1).padStart(3, '0')}`, sequence: r.stops.length + 1 };
+        const newStops = [...r.stops, newStop];
+        const newOrderIds = [...new Set([...r.orderIds, order.id])];
+        const newVolume = newStops.reduce((sum, st) => sum + st.totalVolume, 0);
+        return {
+          ...r,
+          stops: newStops,
+          orderIds: newOrderIds,
+          totalOrders: newStops.length,
+          totalVolume: newVolume,
+          totalWeight: newStops.reduce((sum, st) => sum + st.totalWeight, 0),
+          vehicleType: selectVehicleType(newVolume),
+          updatedAt: new Date().toISOString(),
+        };
+      });
+      const targetRoute = updatedRoutes.find((r) => r.id === routeId);
+      if (targetRoute) {
+        useOrderStore.getState().assignOrderToRoute(order.id, routeId, targetRoute.routeNo);
+      }
+      return { routes: saveRoutes(updatedRoutes) };
+    });
+
+    return { success: true };
+  },
 
   autoOptimizeRoutes: (date, unassignedOrders) => {
     const { routes } = get();
@@ -322,6 +350,7 @@ export const useRouteStore = create<RouteState>((set, get) => ({
 
     let newRoutesCount = 0;
     let mergedCount = 0;
+    let splitCount = 0;
     const newRoutes: Route[] = [...routes];
     let routeIndex = routes.length + 1;
 
@@ -331,87 +360,178 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       EVENING: { start: '18:00', end: '21:00' },
     };
 
+    const createRoute = (
+      district: string,
+      timeSlot: TimeSlot,
+      ordersForRoute: Order[],
+      baseSeq: number
+    ): Route => {
+      const stops: RouteStop[] = ordersForRoute.map((order, idx) =>
+        buildStopFromOrder(order, baseSeq + idx + 1)
+      );
+      const totalVolume = stops.reduce((sum, st) => sum + st.totalVolume, 0);
+      const totalWeight = stops.reduce((sum, st) => sum + st.totalWeight, 0);
+      const vehicleType = selectVehicleType(totalVolume);
+      const times = slotTimes[timeSlot];
+      const now = new Date().toISOString();
+      const id = `ROUTE${String(routeIndex).padStart(3, '0')}`;
+      const routeNo = `RT${date.replace(/-/g, '')}${String(routeIndex).padStart(3, '0')}`;
+      routeIndex++;
+
+      const newRoute: Route = {
+        id,
+        routeNo,
+        date,
+        startTime: `${date} ${times.start}`,
+        endTime: `${date} ${times.end}`,
+        vehicleType,
+        vehiclePlate: '待分配',
+        driverId: '',
+        driverName: '待分配',
+        driverPhone: '',
+        workerIds: [],
+        workerNames: [],
+        stops,
+        orderIds: ordersForRoute.map((o) => o.id),
+        totalOrders: stops.length,
+        totalVolume,
+        totalWeight,
+        estimatedDistance: 0,
+        estimatedDuration: stops.length * 30,
+        startLocation: '仓库',
+        endLocation: '仓库',
+        priority: 'NORMAL',
+        status: 'PLANNED',
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      ordersForRoute.forEach((o) => {
+        useOrderStore.getState().assignOrderToRoute(o.id, id, routeNo);
+      });
+
+      return newRoute;
+    };
+
+    const canAddToRoute = (route: Route, order: Order): boolean => {
+      const currentVol = route.totalVolume;
+      const orderVol = order.totalVolume;
+      const maxVol = VEHICLE_PRESETS[route.vehicleType].maxVolume;
+      return currentVol + orderVol <= maxVol;
+    };
+
     groups.forEach((orders, key) => {
       const [district, slot] = key.split('__');
       const timeSlot = slot as TimeSlot;
-      const times = slotTimes[timeSlot];
 
       const existingRoute = newRoutes.find((r) =>
         r.date === date &&
-        r.stops.some((st) => st.district === district) &&
-        r.status === 'PLANNED'
+        r.status === 'PLANNED' &&
+        r.stops.length > 0 &&
+        r.stops[0].district === district &&
+        r.stops.every((st) => {
+          const stopHour = parseInt(st.estimatedArrival.split(' ')[1].split(':')[0], 10);
+          if (timeSlot === 'MORNING') return stopHour < 12;
+          if (timeSlot === 'AFTERNOON') return stopHour >= 12 && stopHour < 17;
+          return stopHour >= 17;
+        })
       );
 
       if (existingRoute) {
-        const newStops: RouteStop[] = orders.map((order, idx) =>
-          buildStopFromOrder(order, existingRoute.stops.length + idx + 1)
-        );
-        const allStops = [...existingRoute.stops, ...newStops];
-        const allOrderIds = [...new Set([...existingRoute.orderIds, ...orders.map((o) => o.id)])];
-        const newVolume = allStops.reduce((sum, st) => sum + st.totalVolume, 0);
+        const remainingOrders: Order[] = [];
+        const addedToExisting: Order[] = [];
 
-        Object.assign(existingRoute, {
-          stops: allStops,
-          orderIds: allOrderIds,
-          totalOrders: allStops.length,
-          totalVolume: newVolume,
-          totalWeight: allStops.reduce((sum, st) => sum + st.totalWeight, 0),
-          vehicleType: selectVehicleType(newVolume),
-          updatedAt: new Date().toISOString(),
-        });
-        orders.forEach((o) => {
-          useOrderStore.getState().assignOrderToRoute(o.id, existingRoute.id, existingRoute.routeNo);
-        });
-        mergedCount += orders.length;
+        for (const order of orders) {
+          if (canAddToRoute(existingRoute, order)) {
+            addedToExisting.push(order);
+          } else {
+            remainingOrders.push(order);
+          }
+        }
+
+        if (addedToExisting.length > 0) {
+          const newStops: RouteStop[] = addedToExisting.map((order, idx) =>
+            buildStopFromOrder(order, existingRoute.stops.length + idx + 1)
+          );
+          const allStops = [...existingRoute.stops, ...newStops];
+          const allOrderIds = [...new Set([...existingRoute.orderIds, ...addedToExisting.map((o) => o.id)])];
+          const newVolume = allStops.reduce((sum, st) => sum + st.totalVolume, 0);
+
+          Object.assign(existingRoute, {
+            stops: allStops,
+            orderIds: allOrderIds,
+            totalOrders: allStops.length,
+            totalVolume: newVolume,
+            totalWeight: allStops.reduce((sum, st) => sum + st.totalWeight, 0),
+            vehicleType: selectVehicleType(newVolume),
+            updatedAt: new Date().toISOString(),
+          });
+          addedToExisting.forEach((o) => {
+            useOrderStore.getState().assignOrderToRoute(o.id, existingRoute.id, existingRoute.routeNo);
+          });
+          mergedCount += addedToExisting.length;
+        }
+
+        if (remainingOrders.length > 0) {
+          let currentBatch: Order[] = [];
+          let currentVolume = 0;
+
+          for (const order of remainingOrders) {
+            const proposedVolume = currentVolume + order.totalVolume;
+            const proposedVehicle = selectVehicleType(proposedVolume);
+            const maxVol = VEHICLE_PRESETS[proposedVehicle].maxVolume;
+
+            if (proposedVolume <= maxVol) {
+              currentBatch.push(order);
+              currentVolume = proposedVolume;
+            } else {
+              if (currentBatch.length > 0) {
+                newRoutes.push(createRoute(district, timeSlot, currentBatch, 0));
+                newRoutesCount++;
+                splitCount++;
+              }
+              currentBatch = [order];
+              currentVolume = order.totalVolume;
+            }
+          }
+
+          if (currentBatch.length > 0) {
+            newRoutes.push(createRoute(district, timeSlot, currentBatch, 0));
+            newRoutesCount++;
+            if (remainingOrders.length > currentBatch.length) splitCount++;
+          }
+        }
       } else {
-        const stops: RouteStop[] = orders.map((order, idx) =>
-          buildStopFromOrder(order, idx + 1)
-        );
-        const totalVolume = stops.reduce((sum, st) => sum + st.totalVolume, 0);
-        const totalWeight = stops.reduce((sum, st) => sum + st.totalWeight, 0);
-        const now = new Date().toISOString();
-        const id = `ROUTE${String(routeIndex).padStart(3, '0')}`;
-        const routeNo = `RT${date.replace(/-/g, '')}${String(routeIndex).padStart(3, '0')}`;
+        let currentBatch: Order[] = [];
+        let currentVolume = 0;
 
-        const newRoute: Route = {
-          id,
-          routeNo,
-          date,
-          startTime: `${date} ${times.start}`,
-          endTime: `${date} ${times.end}`,
-          vehicleType: selectVehicleType(totalVolume),
-          vehiclePlate: '待分配',
-          driverId: '',
-          driverName: '待分配',
-          driverPhone: '',
-          workerIds: [],
-          workerNames: [],
-          stops,
-          orderIds: orders.map((o) => o.id),
-          totalOrders: stops.length,
-          totalVolume,
-          totalWeight,
-          estimatedDistance: 0,
-          estimatedDuration: stops.length * 30,
-          startLocation: '仓库',
-          endLocation: '仓库',
-          priority: 'NORMAL',
-          status: 'PLANNED',
-          createdAt: now,
-          updatedAt: now,
-        };
+        for (const order of orders) {
+          const proposedVolume = currentVolume + order.totalVolume;
+          const proposedVehicle = selectVehicleType(proposedVolume);
+          const maxVol = VEHICLE_PRESETS[proposedVehicle].maxVolume;
 
-        newRoutes.push(newRoute);
-        orders.forEach((o) => {
-          useOrderStore.getState().assignOrderToRoute(o.id, id, routeNo);
-        });
+          if (proposedVolume <= maxVol) {
+            currentBatch.push(order);
+            currentVolume = proposedVolume;
+          } else {
+            if (currentBatch.length > 0) {
+              newRoutes.push(createRoute(district, timeSlot, currentBatch, 0));
+              newRoutesCount++;
+              splitCount++;
+            }
+            currentBatch = [order];
+            currentVolume = order.totalVolume;
+          }
+        }
 
-        routeIndex++;
-        newRoutesCount++;
+        if (currentBatch.length > 0) {
+          newRoutes.push(createRoute(district, timeSlot, currentBatch, 0));
+          newRoutesCount++;
+        }
       }
     });
 
     set({ routes: saveRoutes(newRoutes) });
-    return { mergedCount, newRoutesCount };
+    return { mergedCount, newRoutesCount, splitCount };
   },
 }));

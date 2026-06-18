@@ -291,11 +291,19 @@ function OrderCard({ order }: { order: Order }) {
 
   const handleAssignConfirm = (workerIds: string[], workerNames: string[], routeId?: string, routeNo?: string) => {
     quickAssignWorkers(order.id, workerIds, workerNames);
+    let msg = `已成功派给 ${workerIds.length} 位师傅`;
     if (routeId) {
-      assignOrderToRoute(order.id, routeId, routeNo);
+      const result = assignOrderToRoute(order.id, routeId, routeNo);
+      if (result.success) {
+        msg += `，已加入线路 ${routeNo}`;
+      } else if (result.error) {
+        alert(`派单成功，但加入线路失败：${result.error}`);
+        setShowAssignModal(false);
+        return;
+      }
     }
     setShowAssignModal(false);
-    alert(`已成功派给 ${workerIds.length} 位师傅`);
+    alert(msg);
   };
 
   const getAvatarColor = () => {

@@ -23,6 +23,7 @@ import {
 import StatCard from '@/components/common/StatCard';
 import { useRouteStore, type Route } from '@/store/useRouteStore';
 import { useOrderStore } from '@/store/useOrderStore';
+import { VEHICLE_PRESETS } from '@/data/categoryPresets';
 import { formatDate, getTimeSlotLabel, getInitials } from '@/utils/formatters';
 import type { Order, TimeSlot, VehicleType } from '@/types/order';
 
@@ -46,9 +47,9 @@ const VEHICLE_LABELS: Record<VehicleType, string> = {
 };
 
 const VEHICLE_MAX_VOLUME: Record<VehicleType, number> = {
-  VAN: 8,
-  TRUCK_SMALL: 14,
-  TRUCK_MEDIUM: 22,
+  VAN: VEHICLE_PRESETS.VAN.maxVolume,
+  TRUCK_SMALL: VEHICLE_PRESETS.TRUCK_SMALL.maxVolume,
+  TRUCK_MEDIUM: VEHICLE_PRESETS.TRUCK_MEDIUM.maxVolume,
 };
 
 const AREA_OPTIONS = [
@@ -254,16 +255,15 @@ function PendingOrderItem({
   order,
   selectedRouteId,
   addOrderToRoute,
-  assignOrderToRoute,
   getRouteById,
 }: {
   order: Order;
   selectedRouteId: string | null;
-  addOrderToRoute: (routeId: string, order: Order) => void;
-  assignOrderToRoute: (orderId: string, routeId: string, routeNo?: string) => void;
+  addOrderToRoute: (routeId: string, order: Order) => { success: boolean; error?: string } | false;
   getRouteById: (id: string) => Route | undefined;
 }) {
   const [added, setAdded] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const slotLabel = getTimeSlotLabel(order.appointmentSlot);
 
   const handleAdd = () => {
@@ -272,10 +272,17 @@ function PendingOrderItem({
       return;
     }
     const route = getRouteById(selectedRouteId);
-    addOrderToRoute(selectedRouteId, order);
-    assignOrderToRoute(order.id, selectedRouteId, route?.routeNo);
-    setAdded(true);
-    setTimeout(() => setAdded(false), 1000);
+    if (!route) return;
+
+    const result = addOrderToRoute(selectedRouteId, order);
+    if (result && result.success) {
+      setAdded(true);
+      setErrorMsg('');
+      setTimeout(() => setAdded(false), 1000);
+    } else if (result && result.error) {
+      setErrorMsg(result.error);
+      setTimeout(() => setErrorMsg(''), 2500);
+    }
   };
 
   return (
@@ -306,17 +313,24 @@ function PendingOrderItem({
             <span className="chip bg-green-50 text-green-700 text-[10px]">已排线路：{order.assignedRouteNo}</span>
           </div>
         )}
+        {errorMsg && (
+          <div className="mt-1.5">
+            <span className="text-[10px] text-red-600 bg-red-50 px-2 py-0.5 rounded">{errorMsg}</span>
+          </div>
+        )}
       </div>
       <button
         onClick={handleAdd}
         disabled={added}
-        className={`btn-primary !py-1.5 !px-3 text-xs shrink-0 ${added ? '!bg-green-600 !border-green-600' : ''}`}
+        className={`btn-primary !py-1.5 !px-3 text-xs shrink-0 ${added ? '!bg-green-600 !border-green-600' : errorMsg ? '!bg-red-500 !border-red-500' : ''}`}
       >
         {added ? (
           <>
             <Check className="w-3.5 h-3.5" />
             已加入
           </>
+        ) : errorMsg ? (
+          '无法加入'
         ) : (
           <>
             <PackagePlus className="w-3.5 h-3.5" />
@@ -441,8 +455,12 @@ export default function Routing() {
       alert('当前没有可拼车的待排订单');
       return;
     }
-    const { mergedCount, newRoutesCount } = autoOptimizeRoutes(currentDate, unassignedOrders);
-    alert(`智能拼车完成：共合并 ${mergedCount} 单，生成 ${newRoutesCount} 条新线路`);
+    const { mergedCount, newRoutesCount, splitCount } = autoOptimizeRoutes(currentDate, unassignedOrders);
+    let msg = `智能拼车完成：共合并 ${mergedCount} 单，生成 ${newRoutesCount} 条新线路`;
+    if (splitCount > 0) {
+      msg += `，其中 ${splitCount} 趟因装载量超限拆分`;
+    }
+    alert(msg);
   };
 
   return (
@@ -624,7 +642,6 @@ export default function Routing() {
                       order={order}
                       selectedRouteId={selectedRouteId}
                       addOrderToRoute={addOrderToRoute}
-                      assignOrderToRoute={assignOrderToRoute}
                       getRouteById={getRouteById}
                     />
                   ))

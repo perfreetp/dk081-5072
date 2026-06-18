@@ -3,6 +3,7 @@ import type { Order, OrderStatus, OrderType, Priority, TimeSlot } from '@/types/
 import type { Worker } from '@/types/worker';
 import mockOrders from '@/data/mockOrders';
 import { useWorkerStore } from '@/store/useWorkerStore';
+import { useRouteStore } from '@/store/useRouteStore';
 
 interface OrderFilters {
   type?: OrderType;
@@ -35,7 +36,7 @@ interface OrderState {
   getOrderById: (id: string) => Order | undefined;
   getFilteredOrders: () => Order[];
   getStats: () => { total: number; pending: number; inProgress: number; completed: number; urgent: number };
-  assignOrderToRoute: (orderId: string, routeId: string, routeNo?: string) => void;
+  assignOrderToRoute: (orderId: string, routeId: string, routeNo?: string) => { success: boolean; error?: string };
   quickAssignWorkers: (orderId: string, workerIds: string[], workerNames: string[]) => void;
   autoReassignTimeoutOrders: () => number;
 }
@@ -106,13 +107,41 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     };
   },
 
-  assignOrderToRoute: (orderId, routeId, routeNo) => set((s) => ({
-    orders: s.orders.map((o) =>
-      o.id === orderId
-        ? { ...o, assignedRouteId: routeId, assignedRouteNo: routeNo, status: 'ASSIGNED', updatedAt: new Date().toISOString() }
-        : o
-    ),
-  })),
+  assignOrderToRoute: (orderId, routeId, routeNo) => {
+    const order = get().orders.find((o) => o.id === orderId);
+    if (!order) return { success: false, error: '订单不存在' };
+
+    const routeStore = useRouteStore.getState();
+    const newRoute = routeStore.getRouteById(routeId);
+    if (!newRoute) return { success: false, error: '线路不存在' };
+
+    if (order.assignedRouteId && order.assignedRouteId !== routeId) {
+      const oldRoute = routeStore.getRouteById(order.assignedRouteId);
+      if (oldRoute) {
+        const stopToRemove = oldRoute.stops.find((st) => st.orderId === orderId);
+        if (stopToRemove) {
+          routeStore.removeStop(order.assignedRouteId, stopToRemove.id);
+        }
+      }
+    }
+
+    if (!order.assignedRouteId || order.assignedRouteId !== routeId) {
+      const addResult = routeStore.addOrderToRoute(routeId, order);
+      if (addResult && !addResult.success) {
+        return addResult;
+      }
+    }
+
+    set((s) => ({
+      orders: s.orders.map((o) =>
+        o.id === orderId
+          ? { ...o, assignedRouteId: routeId, assignedRouteNo: routeNo, status: 'ASSIGNED', updatedAt: new Date().toISOString() }
+          : o
+      ),
+    }));
+
+    return { success: true };
+  },
 
   quickAssignWorkers: (orderId, workerIds, workerNames) => set((s) => ({
     orders: s.orders.map((o) =>

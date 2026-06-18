@@ -32,7 +32,7 @@ import StatCard from '@/components/common/StatCard';
 import mockBuildingRules, { BuildingRule } from '@/data/mockBuildingRules';
 import { getInitials } from '@/utils/formatters';
 import { clsx } from 'clsx';
-import { useWarehouseStore, type InventoryItem, type QualityGrade } from '@/store/useWarehouseStore';
+import { useWarehouseStore, type InventoryItem, type QualityGrade, type OutboundOrder } from '@/store/useWarehouseStore';
 
 type WarehouseTab = 'KANBAN' | 'INBOUND' | 'OUTBOUND' | 'RULES';
 type KanbanColumn = 'QC_PENDING' | 'CLEANING' | 'REPAIRING' | 'PAINTING' | 'RECHECK' | 'FOR_SALE';
@@ -143,54 +143,6 @@ interface InboundFormData {
 
 const MISSING_PARTS_OPTIONS = ['螺丝', '脚垫', '拉手', '抽屉导轨', '门板', '靠枕', '坐垫', '层板'];
 
-interface OutboundItem {
-  id: string;
-  name: string;
-  quantity: number;
-  location: string;
-  checked: boolean;
-}
-
-interface OutboundOrder {
-  id: string;
-  orderNo: string;
-  customerName: string;
-  address: string;
-  items: OutboundItem[];
-  qcStatus: 'CHECKED' | 'PENDING';
-  workerName: string;
-  plateNo: string;
-}
-
-const mockOutboundOrders: OutboundOrder[] = [
-  {
-    id: 'OUT001',
-    orderNo: 'XS20260618001',
-    customerName: '郑先生',
-    address: '上海市浦东新区张江高科技园区博云路2号',
-    items: [
-      { id: '1', name: '意大利进口整体衣柜', quantity: 1, location: 'B-05-01-01', checked: true },
-      { id: '2', name: '真皮软包大床', quantity: 1, location: 'C-05-02-02', checked: true },
-      { id: '3', name: '记忆棉独立弹簧床垫', quantity: 1, location: 'D-05-05-02', checked: false },
-    ],
-    qcStatus: 'PENDING',
-    workerName: '王师傅',
-    plateNo: '沪A·88888',
-  },
-  {
-    id: 'OUT002',
-    orderNo: 'XS20260618002',
-    customerName: '许女士',
-    address: '北京市朝阳区四惠大厦B座1205',
-    items: [
-      { id: '4', name: '人体工学办公椅', quantity: 4, location: 'E-01-02-02', checked: true },
-    ],
-    qcStatus: 'CHECKED',
-    workerName: '李师傅',
-    plateNo: '京B·66666',
-  },
-];
-
 const INITIAL_INBOUND_FORM: InboundFormData = {
   recycleOrderNo: '',
   category: '',
@@ -213,11 +165,18 @@ export default function Warehouse() {
   const [buildingRuleSearch, setBuildingRuleSearch] = useState('');
   const [inboundForm, setInboundForm] = useState<InboundFormData>(INITIAL_INBOUND_FORM);
   const [outboundSearch, setOutboundSearch] = useState('');
-  const [outboundOrders, setOutboundOrders] = useState(mockOutboundOrders);
   const [inboundSubmitting, setInboundSubmitting] = useState(false);
   const [inboundSuccess, setInboundSuccess] = useState(false);
+  const [outboundSuccess, setOutboundSuccess] = useState<Record<string, boolean>>({});
 
-  const { items, getStats, createInboundItem, markOrderItemsShipped } = useWarehouseStore();
+  const {
+    items,
+    outboundOrders,
+    getStats,
+    createInboundItem,
+    toggleOutboundItem,
+    completeOutboundOrder,
+  } = useWarehouseStore();
   const stats = getStats();
 
   const kanbanData = useMemo(() => mapInventoryToKanban(items), [items]);
@@ -252,19 +211,8 @@ export default function Warehouse() {
     }));
   };
 
-  const toggleOutboundItem = (orderId: string, itemId: string) => {
-    setOutboundOrders((prev) =>
-      prev.map((o) =>
-        o.id === orderId
-          ? {
-              ...o,
-              items: o.items.map((it) =>
-                it.id === itemId ? { ...it, checked: !it.checked } : it
-              ),
-            }
-          : o
-      )
-    );
+  const handleToggleOutboundItem = (orderId: string, itemId: string) => {
+    toggleOutboundItem(orderId, itemId);
   };
 
   const handleRefurbishPlanChange = (plan: string) => {
@@ -294,21 +242,17 @@ export default function Warehouse() {
   };
 
   const handleOutboundComplete = (orderId: string) => {
-    const order = outboundOrders.find((o) => o.id === orderId);
-    if (!order) return;
-
-    const allChecked = order.items.every((i) => i.checked);
-    if (!allChecked) return;
-
-    markOrderItemsShipped(order.orderNo);
-
-    setOutboundOrders((prev) =>
-      prev.map((o) =>
-        o.id === orderId
-          ? { ...o, qcStatus: 'CHECKED' as const }
-          : o
-      )
-    );
+    const result = completeOutboundOrder(orderId);
+    if (result.success) {
+      setOutboundSuccess((prev) => ({ ...prev, [orderId]: true }));
+      setTimeout(() => {
+        setOutboundSuccess((prev) => {
+          const next = { ...prev };
+          delete next[orderId];
+          return next;
+        });
+      }, 1500);
+    }
   };
 
   return (
@@ -368,8 +312,9 @@ export default function Warehouse() {
               searchValue={outboundSearch}
               setSearchValue={setOutboundSearch}
               orders={filteredOutboundOrders}
-              toggleItem={toggleOutboundItem}
+              toggleItem={handleToggleOutboundItem}
               onComplete={handleOutboundComplete}
+              successMap={outboundSuccess}
             />
           )}
           {activeTab === 'RULES' && (
@@ -725,12 +670,14 @@ function OutboundSection({
   orders,
   toggleItem,
   onComplete,
+  successMap,
 }: {
   searchValue: string;
   setSearchValue: (v: string) => void;
   orders: OutboundOrder[];
   toggleItem: (orderId: string, itemId: string) => void;
   onComplete: (orderId: string) => void;
+  successMap: Record<string, boolean>;
 }) {
   return (
     <div className="space-y-5">
@@ -840,14 +787,14 @@ function OutboundSection({
                   </button>
                   <button
                     onClick={() => onComplete(order.id)}
-                    disabled={!allChecked || isCompleted}
+                    disabled={!allChecked || isCompleted || successMap[order.id]}
                     className={clsx(
                       'btn-primary',
-                      (!allChecked || isCompleted) && 'opacity-50 cursor-not-allowed',
-                      isCompleted && 'bg-green-600 hover:bg-green-600'
+                      (!allChecked || isCompleted || successMap[order.id]) && 'opacity-50 cursor-not-allowed',
+                      (isCompleted || successMap[order.id]) && 'bg-green-600 hover:bg-green-600'
                     )}
                   >
-                    {isCompleted ? (
+                    {isCompleted || successMap[order.id] ? (
                       <>
                         <CheckCircle2 className="w-4 h-4" />
                         交接完成

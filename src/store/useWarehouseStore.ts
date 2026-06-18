@@ -1,6 +1,27 @@
 import { create } from 'zustand';
 import mockWarehouse from '@/data/mockWarehouse';
+import mockOutboundOrders from '@/data/mockOutboundOrders';
 import { storage } from '@/utils/storage';
+
+export interface OutboundItem {
+  id: string;
+  name: string;
+  quantity: number;
+  location: string;
+  checked: boolean;
+}
+
+export interface OutboundOrder {
+  id: string;
+  orderNo: string;
+  customerName: string;
+  address: string;
+  items: OutboundItem[];
+  qcStatus: 'CHECKED' | 'PENDING';
+  workerName: string;
+  plateNo: string;
+  updatedAt: string;
+}
 
 export type InventoryStatus = 'IN_STOCK' | 'INSPECTING' | 'RESTORING' | 'RESERVED' | 'SHIPPED' | 'SOLD' | 'DISCARDED' | 'RETURNING';
 export type QualityGrade = 'A_PLUS' | 'A' | 'B' | 'C' | 'D';
@@ -71,6 +92,7 @@ interface WarehouseFilters {
 
 interface WarehouseState {
   items: InventoryItem[];
+  outboundOrders: OutboundOrder[];
   selectedIds: string[];
   filters: WarehouseFilters;
   activeTab: InventoryStatus | 'ALL';
@@ -117,12 +139,19 @@ interface WarehouseState {
   };
 
   createInboundItem: (data: InboundItemData) => void;
-  markOrderItemsShipped: (sourceOrderIdOrReservedId: string) => void;
+  markOrderItemsShipped: (sourceOrderIdOrReservedId: string) => number;
+  toggleOutboundItem: (orderId: string, itemId: string) => void;
+  completeOutboundOrder: (orderId: string) => { shippedCount: number; success: boolean };
 }
 
 const saveItems = (items: InventoryItem[]): InventoryItem[] => {
   storage.set('warehouseItems', items);
   return items;
+};
+
+const saveOutboundOrders = (orders: OutboundOrder[]): OutboundOrder[] => {
+  storage.set('outboundOrders', orders);
+  return orders;
 };
 
 const categoryCodeMap: Record<string, string> = {
@@ -160,6 +189,7 @@ const generatePositionCode = (idx: number): WarehouseLocation => {
 
 export const useWarehouseStore = create<WarehouseState>((set, get) => ({
   items: storage.get('warehouseItems', mockWarehouse as InventoryItem[]) as InventoryItem[],
+  outboundOrders: storage.get('outboundOrders', mockOutboundOrders as OutboundOrder[]) as OutboundOrder[],
   selectedIds: [],
   filters: {},
   activeTab: 'ALL',
@@ -326,12 +356,55 @@ export const useWarehouseStore = create<WarehouseState>((set, get) => ({
     return { items: saveItems([...s.items, newItem]) };
   }),
 
-  markOrderItemsShipped: (sourceOrderIdOrReservedId) => set((s) => ({
-    items: saveItems(s.items.map((it) => {
-      const match = it.sourceOrderId === sourceOrderIdOrReservedId
+  markOrderItemsShipped: (sourceOrderIdOrReservedId) => {
+    const { items } = get();
+    let count = 0;
+    const newItems = items.map((it) => {
+      const match = it.sourceOrderNo === sourceOrderIdOrReservedId
+        || it.sourceOrderId === sourceOrderIdOrReservedId
         || it.reservedOrderId === sourceOrderIdOrReservedId;
       if (!match) return it;
-      return { ...it, status: 'SHIPPED', lastUpdatedAt: new Date().toISOString() };
-    })),
+      count++;
+      return { ...it, status: 'SHIPPED' as const, lastUpdatedAt: new Date().toISOString() };
+    });
+    if (count > 0) {
+      set({ items: saveItems(newItems) });
+    }
+    return count;
+  },
+
+  toggleOutboundItem: (orderId, itemId) => set((s) => ({
+    outboundOrders: saveOutboundOrders(s.outboundOrders.map((o) =>
+      o.id === orderId
+        ? {
+            ...o,
+            items: o.items.map((it) =>
+              it.id === itemId ? { ...it, checked: !it.checked } : it
+            ),
+            updatedAt: new Date().toISOString(),
+          }
+        : o
+    )),
   })),
+
+  completeOutboundOrder: (orderId) => {
+    const { outboundOrders, markOrderItemsShipped } = get();
+    const order = outboundOrders.find((o) => o.id === orderId);
+    if (!order) return { shippedCount: 0, success: false };
+
+    const allChecked = order.items.every((i) => i.checked);
+    if (!allChecked) return { shippedCount: 0, success: false };
+
+    const shippedCount = markOrderItemsShipped(order.orderNo);
+
+    set((s) => ({
+      outboundOrders: saveOutboundOrders(s.outboundOrders.map((o) =>
+        o.id === orderId
+          ? { ...o, qcStatus: 'CHECKED' as const, updatedAt: new Date().toISOString() }
+          : o
+      )),
+    }));
+
+    return { shippedCount, success: true };
+  },
 }));
