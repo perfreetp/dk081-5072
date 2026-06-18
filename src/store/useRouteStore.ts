@@ -97,8 +97,9 @@ interface RouteState {
   getFilteredRoutes: () => Route[];
   getStats: () => { total: number; planned: number; inProgress: number; completed: number; totalOrders: number; totalDistance: number };
 
-  addOrderToRoute: (routeId: string, order: Order) => { success: boolean; error?: string } | false;
-  autoOptimizeRoutes: (date: string, unassignedOrders: Order[]) => { mergedCount: number; newRoutesCount: number; splitCount: number };
+  validateAddOrderToRoute: (routeId: string, order: Order) => { success: boolean; error?: string };
+  addOrderToRoute: (routeId: string, order: Order) => { success: boolean; error?: string };
+  autoOptimizeRoutes: (date: string) => { totalOrders: number; newRoutesCount: number; splitCount: number };
 }
 
 const saveRoutes = (routes: Route[]): Route[] => {
@@ -287,9 +288,9 @@ export const useRouteStore = create<RouteState>((set, get) => ({
     };
   },
 
-  addOrderToRoute: (routeId, order) => {
+  validateAddOrderToRoute: (routeId, order) => {
     const route = get().routes.find((r) => r.id === routeId);
-    if (!route) return false;
+    if (!route) return { success: false, error: '线路不存在' };
 
     const routeSlot = route.stops[0]
       ? (() => {
@@ -309,11 +310,18 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       return { success: false, error: `装载量超出车型上限（当前 ${route.totalVolume.toFixed(1)}m³ + 订单 ${order.totalVolume.toFixed(1)}m³ > ${maxVol}m³）` };
     }
 
+    return { success: true };
+  },
+
+  addOrderToRoute: (routeId, order) => {
+    const validation = get().validateAddOrderToRoute(routeId, order);
+    if (!validation.success) return validation;
+
     const stop = buildStopFromOrder(order, 0);
     set((s) => {
       const updatedRoutes = s.routes.map((r) => {
         if (r.id !== routeId) return r;
-        const newStop: RouteStop = { ...stop, id: `STOP${String(r.stops.length + 1).padStart(3, '0')}`, sequence: r.stops.length + 1 };
+        const newStop: RouteStop = { ...stop, id: `STOP${Date.now()}${Math.random().toString(36).slice(2, 6)}`, sequence: r.stops.length + 1 };
         const newStops = [...r.stops, newStop];
         const newOrderIds = [...new Set([...r.orderIds, order.id])];
         const newVolume = newStops.reduce((sum, st) => sum + st.totalVolume, 0);
@@ -328,31 +336,46 @@ export const useRouteStore = create<RouteState>((set, get) => ({
           updatedAt: new Date().toISOString(),
         };
       });
-      const targetRoute = updatedRoutes.find((r) => r.id === routeId);
-      if (targetRoute) {
-        useOrderStore.getState().assignOrderToRoute(order.id, routeId, targetRoute.routeNo);
-      }
       return { routes: saveRoutes(updatedRoutes) };
     });
 
     return { success: true };
   },
 
-  autoOptimizeRoutes: (date, unassignedOrders) => {
+  autoOptimizeRoutes: (date) => {
     const { routes } = get();
-    const groups = new Map<string, Order[]>();
+    const allOrders = useOrderStore.getState().orders;
 
-    unassignedOrders.forEach((order) => {
+    const plannedRoutesForDate = routes.filter((r) => r.date === date && r.status === 'PLANNED');
+    const orderIdsInPlannedRoutes = new Set(plannedRoutesForDate.flatMap((r) => r.orderIds));
+
+    const ordersToRoute = allOrders.filter(
+      (o) =>
+        o.appointmentDate === date &&
+        (o.status === 'PENDING' || orderIdsInPlannedRoutes.has(o.id))
+    );
+
+    if (ordersToRoute.length === 0) {
+      return { totalOrders: 0, newRoutesCount: 0, splitCount: 0 };
+    }
+
+    const orderIdsToReset = new Set(ordersToRoute.map((o) => o.id));
+    useOrderStore.setState((s) => ({
+      orders: s.orders.map((o) =>
+        orderIdsToReset.has(o.id) && o.assignedRouteId
+          ? { ...o, assignedRouteId: undefined, assignedRouteNo: undefined, status: 'PENDING' as const, updatedAt: new Date().toISOString() }
+          : o
+      ),
+    }));
+
+    const remainingRoutes = routes.filter((r) => !(r.date === date && r.status === 'PLANNED'));
+
+    const groups = new Map<string, Order[]>();
+    ordersToRoute.forEach((order) => {
       const key = `${order.address.district}__${order.appointmentSlot}`;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(order);
     });
-
-    let newRoutesCount = 0;
-    let mergedCount = 0;
-    let splitCount = 0;
-    const newRoutes: Route[] = [...routes];
-    let routeIndex = routes.length + 1;
 
     const slotTimes: Record<TimeSlot, { start: string; end: string }> = {
       MORNING: { start: '09:00', end: '12:00' },
@@ -360,14 +383,18 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       EVENING: { start: '18:00', end: '21:00' },
     };
 
+    const newRoutes: Route[] = [...remainingRoutes];
+    let newRoutesCount = 0;
+    let splitCount = 0;
+    let routeIndex = remainingRoutes.length + 1;
+
     const createRoute = (
       district: string,
       timeSlot: TimeSlot,
-      ordersForRoute: Order[],
-      baseSeq: number
+      ordersForRoute: Order[]
     ): Route => {
       const stops: RouteStop[] = ordersForRoute.map((order, idx) =>
-        buildStopFromOrder(order, baseSeq + idx + 1)
+        buildStopFromOrder(order, idx + 1)
       );
       const totalVolume = stops.reduce((sum, st) => sum + st.totalVolume, 0);
       const totalWeight = stops.reduce((sum, st) => sum + st.totalWeight, 0);
@@ -378,7 +405,7 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       const routeNo = `RT${date.replace(/-/g, '')}${String(routeIndex).padStart(3, '0')}`;
       routeIndex++;
 
-      const newRoute: Route = {
+      return {
         id,
         routeNo,
         date,
@@ -405,133 +432,60 @@ export const useRouteStore = create<RouteState>((set, get) => ({
         createdAt: now,
         updatedAt: now,
       };
-
-      ordersForRoute.forEach((o) => {
-        useOrderStore.getState().assignOrderToRoute(o.id, id, routeNo);
-      });
-
-      return newRoute;
     };
 
-    const canAddToRoute = (route: Route, order: Order): boolean => {
-      const currentVol = route.totalVolume;
-      const orderVol = order.totalVolume;
-      const maxVol = VEHICLE_PRESETS[route.vehicleType].maxVolume;
-      return currentVol + orderVol <= maxVol;
+    const batchOrdersByCapacity = (orders: Order[], timeSlot: TimeSlot, district: string): Route[] => {
+      const result: Route[] = [];
+      let currentBatch: Order[] = [];
+      let currentVolume = 0;
+
+      for (const order of orders) {
+        const proposedVolume = currentVolume + order.totalVolume;
+        const proposedVehicle = selectVehicleType(proposedVolume);
+        const maxVol = VEHICLE_PRESETS[proposedVehicle].maxVolume;
+
+        if (proposedVolume <= maxVol) {
+          currentBatch.push(order);
+          currentVolume = proposedVolume;
+        } else {
+          if (currentBatch.length > 0) {
+            result.push(createRoute(district, timeSlot, currentBatch));
+            if (result.length > 1) splitCount++;
+          }
+          currentBatch = [order];
+          currentVolume = order.totalVolume;
+        }
+      }
+
+      if (currentBatch.length > 0) {
+        result.push(createRoute(district, timeSlot, currentBatch));
+        if (result.length > 1) splitCount++;
+      }
+
+      return result;
     };
 
     groups.forEach((orders, key) => {
       const [district, slot] = key.split('__');
       const timeSlot = slot as TimeSlot;
+      const createdRoutes = batchOrdersByCapacity(orders, timeSlot, district);
+      newRoutes.push(...createdRoutes);
+      newRoutesCount += createdRoutes.length;
 
-      const existingRoute = newRoutes.find((r) =>
-        r.date === date &&
-        r.status === 'PLANNED' &&
-        r.stops.length > 0 &&
-        r.stops[0].district === district &&
-        r.stops.every((st) => {
-          const stopHour = parseInt(st.estimatedArrival.split(' ')[1].split(':')[0], 10);
-          if (timeSlot === 'MORNING') return stopHour < 12;
-          if (timeSlot === 'AFTERNOON') return stopHour >= 12 && stopHour < 17;
-          return stopHour >= 17;
-        })
-      );
-
-      if (existingRoute) {
-        const remainingOrders: Order[] = [];
-        const addedToExisting: Order[] = [];
-
-        for (const order of orders) {
-          if (canAddToRoute(existingRoute, order)) {
-            addedToExisting.push(order);
-          } else {
-            remainingOrders.push(order);
-          }
-        }
-
-        if (addedToExisting.length > 0) {
-          const newStops: RouteStop[] = addedToExisting.map((order, idx) =>
-            buildStopFromOrder(order, existingRoute.stops.length + idx + 1)
-          );
-          const allStops = [...existingRoute.stops, ...newStops];
-          const allOrderIds = [...new Set([...existingRoute.orderIds, ...addedToExisting.map((o) => o.id)])];
-          const newVolume = allStops.reduce((sum, st) => sum + st.totalVolume, 0);
-
-          Object.assign(existingRoute, {
-            stops: allStops,
-            orderIds: allOrderIds,
-            totalOrders: allStops.length,
-            totalVolume: newVolume,
-            totalWeight: allStops.reduce((sum, st) => sum + st.totalWeight, 0),
-            vehicleType: selectVehicleType(newVolume),
-            updatedAt: new Date().toISOString(),
-          });
-          addedToExisting.forEach((o) => {
-            useOrderStore.getState().assignOrderToRoute(o.id, existingRoute.id, existingRoute.routeNo);
-          });
-          mergedCount += addedToExisting.length;
-        }
-
-        if (remainingOrders.length > 0) {
-          let currentBatch: Order[] = [];
-          let currentVolume = 0;
-
-          for (const order of remainingOrders) {
-            const proposedVolume = currentVolume + order.totalVolume;
-            const proposedVehicle = selectVehicleType(proposedVolume);
-            const maxVol = VEHICLE_PRESETS[proposedVehicle].maxVolume;
-
-            if (proposedVolume <= maxVol) {
-              currentBatch.push(order);
-              currentVolume = proposedVolume;
-            } else {
-              if (currentBatch.length > 0) {
-                newRoutes.push(createRoute(district, timeSlot, currentBatch, 0));
-                newRoutesCount++;
-                splitCount++;
-              }
-              currentBatch = [order];
-              currentVolume = order.totalVolume;
-            }
-          }
-
-          if (currentBatch.length > 0) {
-            newRoutes.push(createRoute(district, timeSlot, currentBatch, 0));
-            newRoutesCount++;
-            if (remainingOrders.length > currentBatch.length) splitCount++;
-          }
-        }
-      } else {
-        let currentBatch: Order[] = [];
-        let currentVolume = 0;
-
-        for (const order of orders) {
-          const proposedVolume = currentVolume + order.totalVolume;
-          const proposedVehicle = selectVehicleType(proposedVolume);
-          const maxVol = VEHICLE_PRESETS[proposedVehicle].maxVolume;
-
-          if (proposedVolume <= maxVol) {
-            currentBatch.push(order);
-            currentVolume = proposedVolume;
-          } else {
-            if (currentBatch.length > 0) {
-              newRoutes.push(createRoute(district, timeSlot, currentBatch, 0));
-              newRoutesCount++;
-              splitCount++;
-            }
-            currentBatch = [order];
-            currentVolume = order.totalVolume;
-          }
-        }
-
-        if (currentBatch.length > 0) {
-          newRoutes.push(createRoute(district, timeSlot, currentBatch, 0));
-          newRoutesCount++;
-        }
-      }
+      createdRoutes.forEach((route) => {
+        route.orderIds.forEach((oid) => {
+          useOrderStore.setState((s) => ({
+            orders: s.orders.map((o) =>
+              o.id === oid
+                ? { ...o, assignedRouteId: route.id, assignedRouteNo: route.routeNo, status: 'ASSIGNED' as const, updatedAt: new Date().toISOString() }
+                : o
+            ),
+          }));
+        });
+      });
     });
 
     set({ routes: saveRoutes(newRoutes) });
-    return { mergedCount, newRoutesCount, splitCount };
+    return { totalOrders: ordersToRoute.length, newRoutesCount, splitCount };
   },
 }));

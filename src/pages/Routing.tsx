@@ -254,12 +254,12 @@ function RouteCard({
 function PendingOrderItem({
   order,
   selectedRouteId,
-  addOrderToRoute,
+  assignOrderToRoute,
   getRouteById,
 }: {
   order: Order;
   selectedRouteId: string | null;
-  addOrderToRoute: (routeId: string, order: Order) => { success: boolean; error?: string } | false;
+  assignOrderToRoute: (orderId: string, routeId: string, routeNo?: string) => { success: boolean; error?: string };
   getRouteById: (id: string) => Route | undefined;
 }) {
   const [added, setAdded] = useState(false);
@@ -274,12 +274,12 @@ function PendingOrderItem({
     const route = getRouteById(selectedRouteId);
     if (!route) return;
 
-    const result = addOrderToRoute(selectedRouteId, order);
-    if (result && result.success) {
+    const result = assignOrderToRoute(order.id, selectedRouteId, route.routeNo);
+    if (result.success) {
       setAdded(true);
       setErrorMsg('');
       setTimeout(() => setAdded(false), 1000);
-    } else if (result && result.error) {
+    } else if (result.error) {
       setErrorMsg(result.error);
       setTimeout(() => setErrorMsg(''), 2500);
     }
@@ -350,7 +350,7 @@ export default function Routing() {
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [areaDropdownOpen, setAreaDropdownOpen] = useState(false);
 
-  const { routes, addOrderToRoute, autoOptimizeRoutes, getRouteById } = useRouteStore();
+  const { routes, autoOptimizeRoutes, getRouteById } = useRouteStore();
   const { orders, assignOrderToRoute } = useOrderStore();
 
   const dateRoutes = useMemo(() => {
@@ -445,20 +445,14 @@ export default function Routing() {
   };
 
   const handleAutoOptimize = () => {
-    const unassignedOrders = orders.filter(
-      (o) =>
-        o.appointmentDate === currentDate &&
-        o.status === 'PENDING' &&
-        !routes.some((r) => r.orderIds.includes(o.id))
-    );
-    if (unassignedOrders.length === 0) {
-      alert('当前没有可拼车的待排订单');
+    const result = autoOptimizeRoutes(currentDate);
+    if (result.totalOrders === 0) {
+      alert('当前没有可拼车的订单');
       return;
     }
-    const { mergedCount, newRoutesCount, splitCount } = autoOptimizeRoutes(currentDate, unassignedOrders);
-    let msg = `智能拼车完成：共合并 ${mergedCount} 单，生成 ${newRoutesCount} 条新线路`;
-    if (splitCount > 0) {
-      msg += `，其中 ${splitCount} 趟因装载量超限拆分`;
+    let msg = `智能拼车完成：共收拢 ${result.totalOrders} 单，生成 ${result.newRoutesCount} 条新线路`;
+    if (result.splitCount > 0) {
+      msg += `，其中 ${result.splitCount} 趟因装载量超限拆分`;
     }
     alert(msg);
   };
@@ -641,7 +635,7 @@ export default function Routing() {
                       key={order.id}
                       order={order}
                       selectedRouteId={selectedRouteId}
-                      addOrderToRoute={addOrderToRoute}
+                      assignOrderToRoute={assignOrderToRoute}
                       getRouteById={getRouteById}
                     />
                   ))

@@ -112,10 +112,17 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     if (!order) return { success: false, error: '订单不存在' };
 
     const routeStore = useRouteStore.getState();
-    const newRoute = routeStore.getRouteById(routeId);
-    if (!newRoute) return { success: false, error: '线路不存在' };
 
-    if (order.assignedRouteId && order.assignedRouteId !== routeId) {
+    if (order.assignedRouteId === routeId) {
+      return { success: true };
+    }
+
+    const validation = routeStore.validateAddOrderToRoute(routeId, order);
+    if (!validation.success) {
+      return validation;
+    }
+
+    if (order.assignedRouteId) {
       const oldRoute = routeStore.getRouteById(order.assignedRouteId);
       if (oldRoute) {
         const stopToRemove = oldRoute.stops.find((st) => st.orderId === orderId);
@@ -125,17 +132,15 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       }
     }
 
-    if (!order.assignedRouteId || order.assignedRouteId !== routeId) {
-      const addResult = routeStore.addOrderToRoute(routeId, order);
-      if (addResult && !addResult.success) {
-        return addResult;
-      }
+    const addResult = routeStore.addOrderToRoute(routeId, order);
+    if (!addResult.success) {
+      return addResult;
     }
 
     set((s) => ({
       orders: s.orders.map((o) =>
         o.id === orderId
-          ? { ...o, assignedRouteId: routeId, assignedRouteNo: routeNo, status: 'ASSIGNED', updatedAt: new Date().toISOString() }
+          ? { ...o, assignedRouteId: routeId, assignedRouteNo: routeNo, status: 'ASSIGNED' as const, updatedAt: new Date().toISOString() }
           : o
       ),
     }));

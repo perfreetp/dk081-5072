@@ -388,14 +388,36 @@ export const useWarehouseStore = create<WarehouseState>((set, get) => ({
   })),
 
   completeOutboundOrder: (orderId) => {
-    const { outboundOrders, markOrderItemsShipped } = get();
+    const { outboundOrders, items } = get();
     const order = outboundOrders.find((o) => o.id === orderId);
     if (!order) return { shippedCount: 0, success: false };
 
     const allChecked = order.items.every((i) => i.checked);
     if (!allChecked) return { shippedCount: 0, success: false };
 
-    const shippedCount = markOrderItemsShipped(order.orderNo);
+    const outboundItemKeys = new Set(
+      order.items.map((i) => `${i.name}__${i.location}`)
+    );
+
+    let shippedCount = 0;
+    const newItems = items.map((it) => {
+      const matchByOrder = it.reservedOrderId === order.orderNo
+        || it.sourceOrderNo === order.orderNo
+        || it.sourceOrderId === order.orderNo;
+
+      const itemKey = `${it.name}__${it.location.positionCode}`;
+      const matchByDetails = outboundItemKeys.has(itemKey);
+
+      if (!matchByOrder && !matchByDetails) return it;
+      if (it.status === 'SHIPPED' || it.status === 'SOLD' || it.status === 'DISCARDED') return it;
+
+      shippedCount++;
+      return { ...it, status: 'SHIPPED' as const, lastUpdatedAt: new Date().toISOString() };
+    });
+
+    if (shippedCount > 0) {
+      set({ items: saveItems(newItems) });
+    }
 
     set((s) => ({
       outboundOrders: saveOutboundOrders(s.outboundOrders.map((o) =>
